@@ -1,8 +1,6 @@
 name = "crypto-assistant-bybit-proxy"
 main = "worker.js"
-compatibility_date = "2024-01-01"
+compatibility_date = "2024-05-03"
 
 [vars]
 TESTNET = "false"
-# Secrets are added via: wrangler secret put BYBIT_API_KEY
-#                     : wrangler secret put BYBIT_API_SECRET
