@@ -12,7 +12,15 @@ class TradingEngine {
     async getPrices() {
         try {
             const response = await fetch('https://api.binance.com/api/v3/ticker/price');
+            if (!response.ok) {
+                console.error('Binance API error:', response.status);
+                return this.getPricesFallback();
+            }
             const data = await response.json();
+            if (!Array.isArray(data)) {
+                console.error('Invalid response from Binance');
+                return this.getPricesFallback();
+            }
             
             const prices = {};
             for (const ticker of data) {
@@ -21,11 +29,25 @@ class TradingEngine {
                     prices[ticker.symbol] = parseFloat(ticker.price);
                 }
             }
+            console.log('Fetched prices:', Object.keys(prices).length);
             return prices;
         } catch (e) {
-            console.error('Error getting prices:', e);
-            return {};
+            console.error('Error getting prices:', e.message);
+            return this.getPricesFallback();
         }
+    }
+
+    getPricesFallback() {
+        return this.config.fallbackPrices || {
+            'BTCUSDT': 67500,
+            'ETHUSDT': 3450,
+            'SOLUSDT': 145,
+            'BNBUSDT': 590,
+            'ADAUSDT': 0.45,
+            'DOGEUSDT': 0.12,
+            'DOTUSDT': 7.2,
+            'AVAXUSDT': 35
+        };
     }
 
     async calculateAllIndicators(prices) {

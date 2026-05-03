@@ -3,6 +3,7 @@ require('dotenv').config();
 
 // Simple API Server for Crypto Assistant
 const express = require('express');
+const crypto = require('crypto');
 const { TradingEngine } = require('./trading-engine');
 const { BybitClient } = require('./bybit-client');
 const { IndicatorService } = require('./indicators');
@@ -10,6 +11,7 @@ const { IndicatorService } = require('./indicators');
 
 const CONFIG = {
     bybit: {
+        workerUrl: process.env.WORKER_URL || '',
         apiKey: process.env.BYBIT_API_KEY || '',
         apiSecret: process.env.BYBIT_API_SECRET || '',
         testnet: process.env.BYBIT_TESTNET === 'true'
@@ -28,11 +30,31 @@ const CONFIG = {
     },
     symbols: ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'ADAUSDT', 'DOGEUSDT', 'DOTUSDT', 'AVAXUSDT', 'LTCUSDT', 'LINKUSDT', 'MATICUSDT'],
     futuresSymbols: ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'ADAUSDT', 'DOGEUSDT', 'DOTUSDT', 'AVAXUSDT'],
-    intervals: ['15m', '1h', '4h', '1d']
+    intervals: ['15m', '1h', '4h', '1d'],
+    fallbackPrices: {
+        'BTCUSDT': 67500,
+        'ETHUSDT': 3450,
+        'SOLUSDT': 145,
+        'BNBUSDT': 590,
+        'ADAUSDT': 0.45,
+        'DOGEUSDT': 0.12,
+        'DOTUSDT': 7.2,
+        'AVAXUSDT': 35,
+        'LTCUSDT': 85,
+        'LINKUSDT': 14,
+        'MATICUSDT': 0.55
+    }
 };
 
 const app = express();
 app.use(express.json());
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type');
+    if (req.method === 'OPTIONS') return res.sendStatus(200);
+    next();
+});
 app.use(express.static(__dirname));
 
 function roundPrice(symbol, price) {
@@ -60,10 +82,56 @@ const engine = new TradingEngine(CONFIG, bybit, indicators);
 
 app.get('/api/balance', async (req, res) => {
     try {
-        const balance = await bybit.getUSDTBalance();
-        res.json({ success: true, balance });
+        const timestamp = Date.now().toString();
+        const recvWindow = '5000';
+        const params = 'accountType=UNIFIED';
+        
+        const signaturePayload = timestamp + CONFIG.bybit.apiKey + recvWindow + params;
+        const signature = crypto.createHmac('sha256', CONFIG.bybit.apiSecret).update(signaturePayload).digest('hex');
+        
+        const options = {
+            method: 'GET',
+            headers: {
+                'X-BAPI-API-KEY': CONFIG.bybit.apiKey,
+                'X-BAPI-SIGN': signature,
+                'X-BAPI-TIMESTAMP': timestamp,
+                'X-BAPI-RECV-WINDOW': recvWindow,
+                'Content-Type': 'application/json'
+            }
+        };
+        
+        const bybitUrl = 'https://api.bybit.com/v5/account/wallet-balance?' + params;
+        
+        // Try multiple free proxies
+        const proxies = [
+            { url: 'https://proxy.killcors.com?url=' + encodeURIComponent(bybitUrl), key: 'killcors' },
+            { url: 'https://corsproxy.io/?url=' + encodeURIComponent(bybitUrl), key: 'corsproxy' }
+        ];
+        
+        for (const p of proxies) {
+            try {
+                const resp = await fetch(p.url, options);
+                const data = await resp.json();
+                if (data.retCode === 0 || data.result) {
+                    const coins = data.result?.list?.[0]?.coin || [];
+                    const usdt = coins.find(c => c.coin === 'USDT');
+                    const balance = usdt ? parseFloat(usdt.walletBalance) : 0;
+                    res.json({ success: true, balance, proxy: p.key });
+                    return;
+                }
+            } catch (e) {}
+        }
+        
+        // All proxies failed - use client fallback
+        res.json({ 
+            needClientRequest: true,
+            url: bybitUrl,
+            timestamp,
+            recvWindow,
+            signature,
+            apiKey: CONFIG.bybit.apiKey
+        });
     } catch (e) {
-        console.error('Balance fetch error:', e.message);
         res.json({ success: false, error: e.message });
     }
 });

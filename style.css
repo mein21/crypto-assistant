@@ -2004,6 +2004,24 @@ input[type="number"]:focus {
         font-size: 1rem;
     }
     
+    /* Trade actions mobile fix */
+    .trade-actions {
+        grid-template-columns: 1fr;
+        gap: 8px;
+    }
+
+    .execute-btn {
+        font-size: 0.7rem;
+        padding: 14px 12px;
+        white-space: normal;
+        word-break: break-word;
+    }
+
+    .action-btn {
+        font-size: 0.7rem;
+        padding: 10px 8px;
+    }
+
     /* Terminal/Loader */
     .terminal-window {
         width: 85vw;
@@ -2068,6 +2086,21 @@ input[type="number"]:focus {
     .table th, .table td {
         padding: 8px 6px;
         font-size: 0.7rem;
+    }
+
+    .trade-actions {
+        grid-template-columns: 1fr;
+        gap: 6px;
+    }
+
+    .execute-btn {
+        padding: 12px 10px;
+        font-size: 0.65rem;
+    }
+
+    .action-btn {
+        padding: 8px 6px;
+        font-size: 0.65rem;
     }
     
     .terminal-window {

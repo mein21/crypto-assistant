@@ -1,16 +1,55 @@
 // Bybit API Client - V5 SPOT & FUTURES Trading
+// Supports Cloudflare Worker Proxy (recommended for Vercel) or direct API calls
 const crypto = require('crypto');
 
 class BybitClient {
     constructor(apiKey, apiSecret, testnet = false) {
         this.apiKey = apiKey;
         this.apiSecret = apiSecret;
+        this.testnet = testnet;
         this.baseUrl = testnet 
             ? 'https://api-testnet.bybit.com' 
             : 'https://api.bybit.com';
+        // Use worker proxy if WORKER_URL is set (recommended for Vercel)
+        this.workerUrl = process.env.WORKER_URL || '';
     }
 
     async request(method, endpoint, params = {}) {
+        // Use Cloudflare Worker proxy if configured
+        if (this.workerUrl) {
+            return this.requestViaWorker(method, endpoint, params);
+        }
+        // Fallback to direct API calls (requires API keys)
+        return this.requestDirect(method, endpoint, params);
+    }
+
+    async requestViaWorker(method, endpoint, params = {}) {
+        try {
+            const response = await fetch(this.workerUrl + '/bybit', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    endpoint,
+                    method,
+                    params
+                })
+            });
+            
+            const data = await response.json();
+            
+            if (data.retCode !== 0 && data.retCode !== undefined) {
+                throw new Error(`${data.retCode}: ${data.retMsg}`);
+            }
+            return data;
+        } catch (e) {
+            console.error('Bybit Worker error:', e.message);
+            throw e;
+        }
+    }
+
+    async requestDirect(method, endpoint, params = {}) {
         const timestamp = Date.now().toString();
         const recvWindow = '5000';
         
@@ -64,7 +103,10 @@ class BybitClient {
             const coins = data.result?.list?.[0]?.coin || [];
             const usdt = coins.find(c => c.coin === 'USDT');
             return usdt ? parseFloat(usdt.walletBalance) : 0;
-        } catch (e) { return 0; }
+        } catch (e) { 
+            console.error('Balance error:', e.message);
+            return 0; 
+        }
     }
 
     async getAllCoins() {
@@ -99,7 +141,6 @@ class BybitClient {
             params.timeInForce = 'GTC';
         }
         
-        // TP/SL для спота - через conditional orders
         if (tp || sl) {
             params.orderFilter = 'tpslOrder';
             if (tp) params.takeProfit = String(tp);
@@ -110,15 +151,13 @@ class BybitClient {
     }
 
     async placeSpotLimitOrder(symbol, side, qty, price) {
-        // Alias for spot limit order used by older code
-        // Calls the generic spot order with orderType='Limit'
         return this.placeSpotOrder(symbol, side, 'Limit', qty, price);
     }
 
-    // Backward‑compatible wrapper – server.js expects `placeLimitOrder`
     async placeLimitOrder(symbol, side, qty, price) {
         return this.placeSpotLimitOrder(symbol, side, qty, price);
     }
+
     // === FUTURES Trading (USDT derivatives) ===
     async getFuturesBalance() {
         try {
@@ -142,7 +181,6 @@ class BybitClient {
         
         if (price) params.price = String(price);
         
-        // TP/SL для фьючерсов
         if (tp) {
             params.takeProfit = {
                 triggerPrice: String(tp),

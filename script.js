@@ -25,11 +25,37 @@ async function loadBalance() {
     try {
         const r = await fetch('/api/balance');
         const d = await r.json();
+        
         if (d.success) {
             balanceEl.textContent = d.balance.toFixed(2);
+        } else if (d.needClientRequest) {
+            // Server failed, try from browser
+            const resp = await fetch(d.url, {
+                method: 'GET',
+                headers: {
+                    'X-BAPI-API-KEY': d.apiKey,
+                    'X-BAPI-SIGN': d.signature,
+                    'X-BAPI-TIMESTAMP': d.timestamp,
+                    'X-BAPI-RECV-WINDOW': d.recvWindow,
+                    'Content-Type': 'application/json'
+                },
+                mode: 'cors'
+            });
+            const data = await resp.json();
+            if (data.retCode === 0 || data.result) {
+                const coins = data.result?.list?.[0]?.coin || [];
+                const usdt = coins.find(c => c.coin === 'USDT');
+                const balance = usdt ? parseFloat(usdt.walletBalance) : 0;
+                balanceEl.textContent = balance.toFixed(2);
+            } else {
+                balanceEl.textContent = '--';
+            }
+        } else {
+            balanceEl.textContent = '--';
         }
     } catch (e) {
         console.error('Balance error:', e);
+        balanceEl.textContent = '--';
     }
 }
 
