@@ -843,3 +843,5 @@ app.listen(PORT, () => {
     console.log(`   http://localhost:${PORT}/api/analyze`);
     console.log(`   http://localhost:${PORT}/api/balance`);
 });
+
+module.exports = app;
