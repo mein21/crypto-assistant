@@ -1,0 +1,17 @@
+{
+  "name": "crypto-assistant",
+  "version": "1.0.0",
+  "description": "Crypto Trading AI Assistant with Auto-Trading",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "bot": "node trading-bot.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "dotenv": "^16.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

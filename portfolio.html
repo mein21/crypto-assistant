@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Портфолио – Crypto Strategy AI</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="container">
+    <h1 class="title">Портфолио</h1>
+    
+    <div class="card">
+        <div class="status-bar">
+            <div class="balance">
+                <span class="label">Баланс:</span>
+                <span class="value" id="balance">--</span>
+                <span class="unit">USDT</span>
+            </div>
+            <a href="index.html" class="back-btn">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M19 12H5M12 19l-7-7 7-7"/>
+                </svg>
+                Назад
+            </a>
+        </div>
+        
+        <div id="loader" class="loader">Загрузка портфолио…</div>
+        
+        <div class="results show" style="display: block;">
+            <div class="table-wrap">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th><span class="th-icon">#</span></th>
+                            <th><span class="th-icon">📈</span> Пара</th>
+                            <th><span class="th-icon">🎯</span> Напр.</th>
+                            <th><span class="th-icon">💰</span> Вход</th>
+                            <th><span class="th-icon">📈</span> TP</th>
+                            <th><span class="th-icon">📉</span> SL</th>
+                            <th><span class="th-icon">⚡</span> Уверен.</th>
+                            <th><span class="th-icon">💡</span> Обоснование</th>
+                        </tr>
+                    </thead>
+                    <tbody id="portfolioBody"></tbody>
+                </table>
+            </div>
+        </div>
+        
+        <div id="errorMsg" class="comments"></div>
+    </div>
+    
+    <script src="portfolio.js"></script>
+</main>
+</body>
+</html>
