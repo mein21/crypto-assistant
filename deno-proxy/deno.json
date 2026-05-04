@@ -1,0 +1,11 @@
+{
+  "tasks": {
+    "start": "deno run --allow-net --allow-env main.ts",
+    "deploy": "deployctl deploy --project=crypto-assistant-bybit-proxy --entrypoint=main.ts --prod"
+  },
+  "fmt": {
+    "lineWidth": 100,
+    "indentWidth": 2,
+    "singleQuote": false
+  }
+}
