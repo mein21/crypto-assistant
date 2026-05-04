@@ -3,7 +3,7 @@
 // Body: { symbol, side, qty, price?, tp?, sl? }
 // side is the direction the user picked on the frontend ("Buy" = LONG, "Sell" = SHORT).
 
-const { placeFuturesOrder, setCors, errorPayload } = require('./_bybit');
+const { placeFuturesOrder, getWorkerOverrides, setCors, errorPayload } = require('./_bybit');
 
 const DECIMALS = {
     BTCUSDT: 2, ETHUSDT: 2, SOLUSDT: 3, BNBUSDT: 2,
@@ -60,13 +60,15 @@ module.exports = async (req, res) => {
             return res.status(400).json({ success: false, error: `Неверное количество: ${qty}` });
         }
 
+        const opts = getWorkerOverrides(req);
         const result = await placeFuturesOrder(
             symbol,
             side,
             qty,
             roundPrice(symbol, price),
             roundPrice(symbol, tp),
-            roundPrice(symbol, sl)
+            roundPrice(symbol, sl),
+            opts
         );
         return res.status(200).json({ success: true, result });
     } catch (e) {

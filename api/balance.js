@@ -2,7 +2,7 @@
 // Returns the live USDT balance from Bybit, fetched via the Cloudflare Worker
 // proxy. No fallbacks, no API keys in the browser.
 
-const { getUSDTBalance, setCors, errorPayload } = require('./_bybit');
+const { getUSDTBalance, getWorkerOverrides, setCors, errorPayload } = require('./_bybit');
 
 module.exports = async (req, res) => {
     setCors(res);
@@ -12,7 +12,8 @@ module.exports = async (req, res) => {
     }
 
     try {
-        const balance = await getUSDTBalance();
+        const opts = getWorkerOverrides(req);
+        const balance = await getUSDTBalance(opts);
         return res.status(200).json({ success: true, balance });
     } catch (e) {
         console.error('balance error:', e.message);

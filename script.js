@@ -9,17 +9,78 @@ const results = document.getElementById('results');
 
 const balanceEl = document.getElementById('balance');
 const balanceWidget = document.getElementById('balanceWidget');
-const autoTradeCheckbox = document.getElementById('autoTrade');
 const bybitToggle = document.getElementById('bybitEnabled');
+const bybitConfig = document.getElementById('bybitConfig');
+const bybitWorkerUrlInput = document.getElementById('bybitWorkerUrl');
+const bybitConfigStatus = document.getElementById('bybitConfigStatus');
 
 const BYBIT_PREF_KEY = 'bybitIntegrationEnabled';
+const BYBIT_WORKER_URL_KEY = 'bybitWorkerUrl';
+
 function isBybitEnabled() {
     return localStorage.getItem(BYBIT_PREF_KEY) === '1';
+}
+function getBybitWorkerUrl() {
+    const raw = (localStorage.getItem(BYBIT_WORKER_URL_KEY) || '').trim().replace(/\/+$/, '');
+    if (!raw) return '';
+    try {
+        const u = new URL(raw);
+        return u.protocol === 'https:' ? u.origin : '';
+    } catch (_) { return ''; }
+}
+function bybitFetchOptions(extra = {}) {
+    const url = getBybitWorkerUrl();
+    const headers = { ...(extra.headers || {}) };
+    if (url) headers['X-Worker-Url'] = url;
+    return { ...extra, headers };
+}
+function setBybitStatus(text, kind) {
+    if (!bybitConfigStatus) return;
+    bybitConfigStatus.textContent = text || '';
+    bybitConfigStatus.dataset.kind = kind || '';
+}
+
+// Smoothly tween a numeric value displayed inside an element, then briefly
+// flash it. Falls back to plain assignment when reduced-motion is preferred.
+function animateNumber(el, target, opts = {}) {
+    if (!el) return;
+    const { duration = 700, decimals = 2, prefix = '', suffix = '' } = opts;
+    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const fromText = (el.textContent || '').replace(/[^\d.\-]/g, '');
+    const fromNum = parseFloat(fromText);
+    const targetNum = Number(target);
+    if (!isFinite(targetNum)) {
+        el.textContent = prefix + String(target) + suffix;
+        return;
+    }
+    if (reduce || !isFinite(fromNum)) {
+        el.textContent = prefix + targetNum.toFixed(decimals) + suffix;
+        flashValue(el);
+        return;
+    }
+    const start = performance.now();
+    const ease = (t) => 1 - Math.pow(1 - t, 3);
+    function tick(now) {
+        const t = Math.min(1, (now - start) / duration);
+        const v = fromNum + (targetNum - fromNum) * ease(t);
+        el.textContent = prefix + v.toFixed(decimals) + suffix;
+        if (t < 1) requestAnimationFrame(tick);
+        else flashValue(el);
+    }
+    requestAnimationFrame(tick);
+}
+
+function flashValue(el) {
+    if (!el || !el.classList) return;
+    el.classList.remove('flash-update');
+    void el.offsetWidth;
+    el.classList.add('flash-update');
 }
 function applyBybitVisibility() {
     const on = isBybitEnabled();
     if (bybitToggle) bybitToggle.checked = on;
     if (balanceWidget) balanceWidget.style.display = on ? '' : 'none';
+    if (bybitConfig) bybitConfig.style.display = on ? '' : 'none';
     const paBtn = document.getElementById('portfolioAnalyzeBtn');
     if (paBtn) paBtn.style.display = on ? '' : 'none';
     if (!on) {
@@ -27,15 +88,70 @@ function applyBybitVisibility() {
         if (paSection) paSection.style.display = 'none';
     }
 }
+async function pingBybitWorker() {
+    const url = getBybitWorkerUrl();
+    if (!url) {
+        setBybitStatus('URL не задан — балансы и анализ-портфеля не будут работать.', 'warn');
+        return;
+    }
+    setBybitStatus('Проверяю прокси…', '');
+    try {
+        const r = await fetch(`${url}/health`, { method: 'GET', mode: 'cors' });
+        if (r.ok) setBybitStatus('Прокси отвечает ✓', 'ok');
+        else setBybitStatus(`Прокси вернул HTTP ${r.status}`, 'err');
+    } catch (e) {
+        setBybitStatus(`Прокси недоступен: ${e.message}`, 'err');
+    }
+}
+if (bybitWorkerUrlInput) {
+    bybitWorkerUrlInput.value = localStorage.getItem(BYBIT_WORKER_URL_KEY) || '';
+    const save = () => {
+        const raw = bybitWorkerUrlInput.value.trim().replace(/\/+$/, '');
+        localStorage.setItem(BYBIT_WORKER_URL_KEY, raw);
+        bybitWorkerUrlInput.value = raw;
+        if (!raw) { setBybitStatus('', ''); return; }
+        try {
+            const u = new URL(raw);
+            if (u.protocol !== 'https:') {
+                setBybitStatus('Нужен https://-URL.', 'err');
+                return;
+            }
+        } catch (_) {
+            setBybitStatus('Невалидный URL.', 'err');
+            return;
+        }
+        pingBybitWorker().then(() => { if (isBybitEnabled()) loadBalance(); });
+    };
+    bybitWorkerUrlInput.addEventListener('change', save);
+    bybitWorkerUrlInput.addEventListener('blur', save);
+    bybitWorkerUrlInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); bybitWorkerUrlInput.blur(); }
+    });
+}
 if (bybitToggle) {
     bybitToggle.addEventListener('change', () => {
         localStorage.setItem(BYBIT_PREF_KEY, bybitToggle.checked ? '1' : '0');
         applyBybitVisibility();
-        if (bybitToggle.checked) loadBalance();
-        else balanceEl.textContent = '--';
+        if (bybitToggle.checked) {
+            if (getBybitWorkerUrl()) {
+                pingBybitWorker().then(() => loadBalance());
+            } else {
+                setBybitStatus('URL не задан — балансы и анализ-портфеля не будут работать.', 'warn');
+            }
+        } else {
+            setBybitStatus('', '');
+            balanceEl.textContent = '--';
+        }
     });
 }
 applyBybitVisibility();
+if (isBybitEnabled()) {
+    if (getBybitWorkerUrl()) {
+        pingBybitWorker();
+    } else {
+        setBybitStatus('URL не задан — балансы и анализ-портфеля не будут работать.', 'warn');
+    }
+}
 
 const pairEl = document.getElementById('pair');
 const directionEl = document.getElementById('direction');
@@ -54,35 +170,13 @@ async function loadBalance() {
         return;
     }
     try {
-        const r = await fetch('/api/balance');
+        const r = await fetch('/api/balance', bybitFetchOptions());
         const d = await r.json();
-        
         if (d.success) {
-            balanceEl.textContent = d.balance.toFixed(2);
-        } else if (d.needClientRequest) {
-            // Server failed, try from browser
-            const resp = await fetch(d.url, {
-                method: 'GET',
-                headers: {
-                    'X-BAPI-API-KEY': d.apiKey,
-                    'X-BAPI-SIGN': d.signature,
-                    'X-BAPI-TIMESTAMP': d.timestamp,
-                    'X-BAPI-RECV-WINDOW': d.recvWindow,
-                    'Content-Type': 'application/json'
-                },
-                mode: 'cors'
-            });
-            const data = await resp.json();
-            if (data.retCode === 0 || data.result) {
-                const coins = data.result?.list?.[0]?.coin || [];
-                const usdt = coins.find(c => c.coin === 'USDT');
-                const balance = usdt ? parseFloat(usdt.walletBalance) : 0;
-                balanceEl.textContent = balance.toFixed(2);
-            } else {
-                balanceEl.textContent = '--';
-            }
+            animateNumber(balanceEl, d.balance, { decimals: 2 });
         } else {
             balanceEl.textContent = '--';
+            if (d.error && bybitConfigStatus) setBybitStatus(d.error, 'err');
         }
     } catch (e) {
         console.error('Balance error:', e);
@@ -111,11 +205,15 @@ async function runAnalysis() {
     currentButton = presetBtn;
     const pos = getButtonPosition(presetBtn);
     
-document.getElementById('portfolioAnalysis').style.display = 'none';
+    document.getElementById('portfolioAnalysis').style.display = 'none';
     document.getElementById('bestTrade').style.display = 'none';
     document.getElementById('tradeActions').style.display = 'none';
-    document.getElementById('executeBtn').style.display = 'none';
     currentTrade = null;
+
+    const executeBtnReset = document.getElementById('executeBtn');
+    executeBtnReset.style.display = '';
+    executeBtnReset.disabled = false;
+    executeBtnReset.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg> Выставить';
     
     const loader = document.getElementById('portfolioLoader');
     loader.classList.add('active');
@@ -198,6 +296,7 @@ document.getElementById('portfolioAnalysis').style.display = 'none';
             
             pairEl.textContent = t.pair || '--';
             directionEl.textContent = t.direction || '--';
+            directionEl.dataset.dir = (t.direction || '').toUpperCase();
             entryPriceEl.textContent = t.entryPrice ? '$' + t.entryPrice.toLocaleString() : '--';
             tpEl.textContent = t.tp ? '$' + t.tp.toLocaleString() : '--';
             slEl.textContent = t.sl ? '$' + t.sl.toLocaleString() : '--';
@@ -211,8 +310,8 @@ document.getElementById('portfolioAnalysis').style.display = 'none';
             reasonEl.textContent = t.reason || '';
             
             if (t.positionSize) {
-                const coin = t.pair ? t.pair.split('/')[0] : '';
-                positionSizeEl.textContent = t.positionSize.toFixed(4) + ' ' + coin;
+                const coin = (t.pair || '').replace(/USDT$|USDC$|USD$/, '');
+                positionSizeEl.textContent = t.positionSize.toFixed(4) + (coin ? ' ' + coin : '');
             }
             
 if (t.executed) {
@@ -325,19 +424,20 @@ portfolioBtn.addEventListener('click', async () => {
         portfolioPairs = d.pairs;
         tbody.innerHTML = d.pairs.map((p, i) => `
             <tr class="${p.direction.toLowerCase()}">
-                <td>${i + 1}</td>
-                <td><strong>${p.pair}</strong></td>
-                <td><span class="dir ${p.direction.toLowerCase()}"><span class="dot"></span>${p.direction}</span></td>
-                <td>$${p.entryPrice?.toFixed(2) || '-'}</td>
-                <td>${p.tp ? '$' + p.tp.toFixed(2) : '-'}</td>
-                <td>${p.sl ? '$' + p.sl.toFixed(2) : '-'}</td>
-                <td>${p.confidence}%</td>
-                <td>${p.reason || '-'}</td>
-                <td>
+                <td data-label="#" class="cell-num">${i + 1}</td>
+                <td data-label="Пара" class="cell-pair"><strong>${p.pair}</strong></td>
+                <td data-label="Направление" class="cell-dir"><span class="dir ${p.direction.toLowerCase()}"><span class="dot"></span>${p.direction}</span></td>
+                <td data-label="Вход" class="cell-entry">$${p.entryPrice?.toFixed(2) || '-'}</td>
+                <td data-label="TP" class="cell-tp">${p.tp ? '$' + p.tp.toFixed(2) : '-'}</td>
+                <td data-label="SL" class="cell-sl">${p.sl ? '$' + p.sl.toFixed(2) : '-'}</td>
+                <td data-label="Уверенность" class="cell-conf">${p.confidence}%</td>
+                <td data-label="Обоснование" class="cell-reason">${p.reason || '-'}</td>
+                <td class="cell-action">
                     <button class="table-btn" onclick="executePairOrder(${i})">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M5 12h14M12 5l7 7-7 7"/>
                         </svg>
+                        <span class="table-btn-label">Выставить</span>
                     </button>
                 </td>
             </tr>
@@ -423,7 +523,7 @@ portfolioAnalyzeBtn.addEventListener('click', async () => {
     
     typeWriter();
     
-    const r = await fetch('/api/portfolio/analyze', {method: 'POST'});
+    const r = await fetch('/api/portfolio/analyze', bybitFetchOptions({method: 'POST'}));
     const d = await r.json();
     
     const loaderEl = document.getElementById('portfolioLoader');
@@ -542,11 +642,11 @@ const payload = {
         console.log('Sending:', payload);
         
         const endpoint = currentTrade.orderType === 'market' ? '/api/execute-market' : '/api/execute';
-        const r = await fetch(endpoint, {
+        const r = await fetch(endpoint, bybitFetchOptions({
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(payload)
-        });
+        }));
         const d = await r.json();
         console.log('Response:', d);
         
@@ -650,7 +750,7 @@ async function useAIRecommendation() {
     hideAllInputs();
     
     try {
-        const r = await fetch('/api/balance');
+        const r = await fetch('/api/balance', bybitFetchOptions());
         const d = await r.json();
         
         console.log('Balance response:', d);
@@ -663,18 +763,14 @@ async function useAIRecommendation() {
             
             console.log('Updated trade:', currentTrade);
             
-            document.getElementById('positionInfo').textContent = '$' + usdtAmount;
-            document.getElementById('priceInfo').textContent = '$' + currentTrade.entryPrice.toLocaleString();
+            document.getElementById('positionInfo').textContent = '$' + usdtAmount.toFixed(2);
+            document.getElementById('priceInfo').textContent = currentTrade.entryPrice ? '$' + currentTrade.entryPrice.toLocaleString() : '--';
         } else {
             alert('Не удалось получить баланс');
         }
     } catch (e) {
         alert('Ошибка получения баланса: ' + e.message);
     }
-}
-
-function showExecuteButton() {
-    // Execute button is now always visible in tradeActions
 }
 
 async function executePairOrder(index) {
@@ -685,7 +781,7 @@ async function executePairOrder(index) {
     }
     
     try {
-        const r = await fetch('/api/balance');
+        const r = await fetch('/api/balance', bybitFetchOptions());
         const d = await r.json();
         
         if (d.balance) {
@@ -694,7 +790,7 @@ async function executePairOrder(index) {
             
             const qty = parseFloat((usdtAmount / pair.entryPrice).toFixed(4));
             
-            const r2 = await fetch('/api/execute', {
+            const r2 = await fetch('/api/execute', bybitFetchOptions({
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({
@@ -705,7 +801,7 @@ async function executePairOrder(index) {
                     tp: pair.tp,
                     sl: pair.sl
                 })
-            });
+            }));
             const result = await r2.json();
             
             if (result.success) {

@@ -1,13 +1,36 @@
-// Shared helper for talking to the Cloudflare Worker that proxies Bybit's
-// private API. The worker holds the Bybit credentials and signs requests; the
-// Vercel serverless functions only need the worker URL plus a shared token.
+// Shared helper for talking to a Bybit-API proxy that holds the user's keys
+// and signs requests. The proxy URL can come from two places:
+//   1. The X-Worker-Url request header (sent by the browser when the user has
+//      a personal launcher running, e.g. proxy/launch.mjs from PR #7). This
+//      takes precedence and lets the user route through their own machine.
+//   2. The WORKER_URL env var on Vercel (a globally-deployed proxy).
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 
-function getWorkerConfig() {
-    const url = process.env.WORKER_URL;
+function sanitizeWorkerUrl(raw) {
+    if (typeof raw !== 'string') return null;
+    const trimmed = raw.trim().replace(/\/+$/, '');
+    if (!trimmed) return null;
+    let parsed;
+    try { parsed = new URL(trimmed); } catch (_) { return null; }
+    if (parsed.protocol !== 'https:') return null;
+    // Reject literal IPs and localhost to limit SSRF surface to public hostnames.
+    const host = parsed.hostname;
+    if (/^(\d{1,3}\.){3}\d{1,3}$/.test(host)) return null;
+    if (host === 'localhost' || host.endsWith('.localhost')) return null;
+    return parsed.origin;
+}
+
+function getWorkerOverrides(req) {
+    const headerUrl = req?.headers?.['x-worker-url'] || req?.headers?.['X-Worker-Url'];
+    const workerUrl = sanitizeWorkerUrl(headerUrl);
+    return workerUrl ? { workerUrl } : {};
+}
+
+function getWorkerConfig({ workerUrl } = {}) {
+    const url = workerUrl || process.env.WORKER_URL;
     if (!url) {
-        const err = new Error('WORKER_URL не настроен в Vercel. Добавь переменную в Settings → Environment Variables и задеплой Cloudflare Worker (см. DEPLOY_WORKER.md).');
+        const err = new Error('WORKER_URL не настроен. Включи переключатель "Bybit" и вставь URL прокси (или задай WORKER_URL в Vercel env).');
         err.code = 'WORKER_URL_MISSING';
         throw err;
     }
@@ -17,8 +40,9 @@ function getWorkerConfig() {
     };
 }
 
-async function callBybit(endpoint, method = 'GET', params = {}, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
-    const { url, token } = getWorkerConfig();
+async function callBybit(endpoint, method = 'GET', params = {}, opts = {}) {
+    const { timeoutMs = DEFAULT_TIMEOUT_MS, workerUrl } = opts;
+    const { url, token } = getWorkerConfig({ workerUrl });
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -71,15 +95,15 @@ async function callBybit(endpoint, method = 'GET', params = {}, { timeoutMs = DE
     }
 }
 
-async function getUSDTBalance() {
-    const data = await callBybit('/v5/account/wallet-balance', 'GET', { accountType: 'UNIFIED' });
+async function getUSDTBalance(opts = {}) {
+    const data = await callBybit('/v5/account/wallet-balance', 'GET', { accountType: 'UNIFIED' }, opts);
     const coins = data.result?.list?.[0]?.coin || [];
     const usdt = coins.find(c => c.coin === 'USDT');
     return usdt ? parseFloat(usdt.walletBalance) : 0;
 }
 
-async function getAllCoins() {
-    const data = await callBybit('/v5/account/wallet-balance', 'GET', { accountType: 'UNIFIED' });
+async function getAllCoins(opts = {}) {
+    const data = await callBybit('/v5/account/wallet-balance', 'GET', { accountType: 'UNIFIED' }, opts);
     const coins = data.result?.list?.[0]?.coin || [];
     const out = {};
     for (const c of coins) {
@@ -92,21 +116,21 @@ async function getAllCoins() {
     return out;
 }
 
-async function getOpenOrders(category = 'linear') {
-    const data = await callBybit('/v5/order/realtime', 'GET', { category, openOnly: 1 });
+async function getOpenOrders(category = 'linear', opts = {}) {
+    const data = await callBybit('/v5/order/realtime', 'GET', { category, openOnly: 1 }, opts);
     return data.result?.list || [];
 }
 
-async function getOrderHistory(category = 'linear', limit = 100) {
-    const data = await callBybit('/v5/order/history', 'GET', { category, limit });
+async function getOrderHistory(category = 'linear', limit = 100, opts = {}) {
+    const data = await callBybit('/v5/order/history', 'GET', { category, limit }, opts);
     return data.result?.list || [];
 }
 
-async function cancelOrder(orderId, symbol, category = 'linear') {
-    return callBybit('/v5/order/cancel', 'POST', { category, symbol, orderId });
+async function cancelOrder(orderId, symbol, category = 'linear', opts = {}) {
+    return callBybit('/v5/order/cancel', 'POST', { category, symbol, orderId }, opts);
 }
 
-async function placeFuturesOrder(symbol, side, qty, price = null, tp = null, sl = null) {
+async function placeFuturesOrder(symbol, side, qty, price = null, tp = null, sl = null, opts = {}) {
     const params = {
         category: 'linear',
         symbol,
@@ -118,13 +142,13 @@ async function placeFuturesOrder(symbol, side, qty, price = null, tp = null, sl 
     if (price) params.price = String(price);
     if (tp) params.takeProfit = String(tp);
     if (sl) params.stopLoss = String(sl);
-    return callBybit('/v5/order/create', 'POST', params);
+    return callBybit('/v5/order/create', 'POST', params, opts);
 }
 
 function setCors(res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Worker-Url');
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
 }
 
@@ -144,6 +168,7 @@ module.exports = {
     getOrderHistory,
     cancelOrder,
     placeFuturesOrder,
+    getWorkerOverrides,
     setCors,
     errorPayload
 };
