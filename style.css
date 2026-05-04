@@ -2359,3 +2359,38 @@ input::placeholder {
 .preset:focus {
     animation: focusRing 1s ease-out;
 }
+
+/* "5 пар" table fit: let it scroll horizontally and wrap long reasoning */
+#results .table-wrap {
+    overflow-x: auto;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+#results .table {
+    min-width: 880px;
+    table-layout: auto;
+}
+
+#tbody td,
+#tbody th {
+    white-space: nowrap;
+}
+
+/* "Обоснование" column (8th) — let it wrap and grow */
+#results .table th:nth-child(8),
+#tbody td:nth-child(8) {
+    white-space: normal;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    min-width: 240px;
+    max-width: 360px;
+    line-height: 1.4;
+}
+
+@media (max-width: 600px) {
+    #results .table { min-width: 720px; }
+    #results .table th, #results .table td { padding: 10px 10px; font-size: 0.72rem; }
+    #results .table th:nth-child(8),
+    #tbody td:nth-child(8) { min-width: 180px; max-width: 240px; font-size: 0.7rem; }
+}
