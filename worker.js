@@ -66,7 +66,9 @@ export default {
       return jsonResponse({ error: 'Missing required field: endpoint' }, 400);
     }
 
-    const baseUrl = testnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';
+    const baseHosts = testnet
+      ? ['https://api-testnet.bybit.com']
+      : ['https://api.bybit.com', 'https://api.bytick.com', 'https://api.bybitglobal.com'];
     const timestamp = Date.now().toString();
     const recvWindow = '5000';
 
@@ -83,7 +85,6 @@ export default {
     const signature = await hmacSha256(apiSecret, signaturePayload);
 
     const queryString = paramStr ? '?' + paramStr : '';
-    const bybitUrl = baseUrl + endpoint + queryString;
 
     const headers = {
       'X-BAPI-API-KEY': apiKey,
@@ -96,16 +97,32 @@ export default {
     const fetchOptions = { method, headers };
     if (method !== 'GET' && bodyStr) fetchOptions.body = bodyStr;
 
-    try {
-      const response = await fetch(bybitUrl, fetchOptions);
-      const data = await response.text();
-      return new Response(data, {
-        status: response.status,
+    let lastResponse = null;
+    let lastBody = '';
+    for (const baseUrl of baseHosts) {
+      try {
+        const r = await fetch(baseUrl + endpoint + queryString, fetchOptions);
+        const text = await r.text();
+        if (r.status >= 500 || (r.status === 403 && /CloudFront|country/i.test(text))) {
+          lastResponse = r;
+          lastBody = text;
+          continue;
+        }
+        return new Response(text, {
+          status: r.status,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      } catch (e) {
+        lastBody = e.message || String(e);
+      }
+    }
+    if (lastResponse) {
+      return new Response(lastBody, {
+        status: lastResponse.status,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
-    } catch (e) {
-      return jsonResponse({ error: e.message || String(e) }, 502);
     }
+    return jsonResponse({ error: lastBody || 'All Bybit hosts failed' }, 502);
   }
 };
 

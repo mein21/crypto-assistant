@@ -2,5 +2,11 @@ name = "crypto-assistant-bybit-proxy"
 main = "worker.js"
 compatibility_date = "2024-05-03"
 
+# Smart Placement lets Cloudflare run the worker close to Bybit's API instead
+# of the user's edge. This usually picks an Asia/EU region that Bybit doesn't
+# geo-block, which avoids the CloudFront 403 "blocked country" responses.
+[placement]
+mode = "smart"
+
 [vars]
 TESTNET = "false"
