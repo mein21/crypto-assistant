@@ -1,7 +1,6 @@
-// Vercel Serverless Function: GET /api/analyze
-// Returns ONE best trade recommendation produced strictly by the AI model.
-// No hard-coded fallback values are returned: if the AI fails or returns an
-// invalid signal, the response will be { success: false, error, raw }.
+// Vercel Serverless Function: POST /api/portfolio
+// Asks the AI to pick the 5 best trades across the supported symbols.
+// Returns ONLY what the AI produced. No hard-coded fallback values.
 
 const { IndicatorService } = require('../indicators');
 
@@ -60,7 +59,7 @@ function buildPrompt(prices, indicators) {
         })
         .join('\n');
 
-    return `Ты профессиональный криптотрейдер. Проанализируй рынок и дай ОДНУ лучшую рекомендацию строго в виде JSON-объекта.
+    return `Ты профессиональный криптотрейдер. Выбери 5 лучших сделок на основе данных ниже и верни их строго в виде JSON.
 
 Текущие цены:
 ${priceLines}
@@ -68,22 +67,22 @@ ${priceLines}
 Технические индикаторы (1h timeframe):
 ${indLines}
 
-Верни JSON со следующими полями:
-{
-  "pair": "BTCUSDT",
-  "direction": "LONG" | "SHORT" | "HET",
-  "entryPrice": 12345.67,
-  "tp": 13000.00,
-  "sl": 12000.00,
-  "confidence": 8,
-  "reason": "Краткое обоснование на русском"
-}
+Верни строго JSON-массив из 5 элементов, без markdown, без пояснений до или после:
+[
+  {
+    "pair": "BTCUSDT",
+    "direction": "LONG" | "SHORT" | "HET",
+    "entryPrice": 12345.67,
+    "tp": 13000.00,
+    "sl": 12000.00,
+    "confidence": 80,
+    "reason": "Краткое обоснование на русском"
+  }
+]
 
 ПРАВИЛА TP/SL:
 - LONG: TP > entryPrice, SL < entryPrice
-- SHORT: TP < entryPrice, SL > entryPrice
-
-Верни ТОЛЬКО JSON-объект без markdown-обёртки и без любого текста до или после.`;
+- SHORT: TP < entryPrice, SL > entryPrice`;
 }
 
 async function callOpenRouter(prompt, apiKey) {
@@ -95,7 +94,7 @@ async function callOpenRouter(prompt, apiKey) {
         },
         body: JSON.stringify({
             model: OPENROUTER_MODEL,
-            max_tokens: 1500,
+            max_tokens: 2500,
             temperature: 0.2,
             messages: [{ role: 'user', content: prompt }]
         })
@@ -119,11 +118,12 @@ async function callOpenRouter(prompt, apiKey) {
     return content;
 }
 
-function parseAITrade(content) {
-    const match = content.match(/\{[\s\S]*\}/);
+function parseAIPairs(content) {
+    const match = content.match(/\[[\s\S]*\]/);
     if (!match) return null;
     try {
-        return JSON.parse(match[0]);
+        const arr = JSON.parse(match[0]);
+        return Array.isArray(arr) ? arr : null;
     } catch {
         return null;
     }
@@ -135,6 +135,18 @@ function toNumberOrNull(v) {
     return Number.isFinite(n) ? n : null;
 }
 
+function normalisePair(p) {
+    return {
+        pair: p.pair ? String(p.pair).replace('/', '') : '',
+        direction: p.direction ? String(p.direction).toUpperCase() : '',
+        entryPrice: toNumberOrNull(p.entryPrice),
+        tp: toNumberOrNull(p.tp),
+        sl: toNumberOrNull(p.sl),
+        confidence: toNumberOrNull(p.confidence),
+        reason: p.reason ? String(p.reason) : ''
+    };
+}
+
 module.exports = async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -142,7 +154,7 @@ module.exports = async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
 
     if (req.method === 'OPTIONS') return res.status(200).end();
-    if (req.method !== 'GET') {
+    if (req.method !== 'POST' && req.method !== 'GET') {
         return res.status(405).json({ success: false, error: 'Method not allowed' });
     }
 
@@ -164,34 +176,34 @@ module.exports = async (req, res) => {
         const prompt = buildPrompt(prices, indicators);
         const content = await callOpenRouter(prompt, apiKey);
 
-        const aiTrade = parseAITrade(content);
-        if (!aiTrade || !aiTrade.pair || !aiTrade.direction) {
+        const aiPairs = parseAIPairs(content);
+        if (!aiPairs || aiPairs.length === 0) {
             return res.status(200).json({
                 success: false,
-                error: 'AI вернул некорректный сигнал',
+                error: 'AI вернул некорректный список сделок',
                 raw: content
             });
         }
 
-        // Strictly use AI-provided values; only normalise numeric types so the
-        // frontend can call .toLocaleString() / .toFixed() without crashing.
-        const trade = {
-            pair: String(aiTrade.pair).replace('/', ''),
-            direction: String(aiTrade.direction).toUpperCase(),
-            entryPrice: toNumberOrNull(aiTrade.entryPrice),
-            tp: toNumberOrNull(aiTrade.tp),
-            sl: toNumberOrNull(aiTrade.sl),
-            confidence: toNumberOrNull(aiTrade.confidence),
-            reason: aiTrade.reason ? String(aiTrade.reason) : ''
-        };
+        const pairs = aiPairs
+            .map(normalisePair)
+            .filter(p => p.pair && p.direction);
+
+        if (pairs.length === 0) {
+            return res.status(200).json({
+                success: false,
+                error: 'AI вернул сделки в неподдерживаемом формате',
+                raw: content
+            });
+        }
 
         return res.status(200).json({
             success: true,
             prices,
-            trade
+            pairs
         });
     } catch (e) {
-        console.error('analyze error:', e);
+        console.error('portfolio error:', e);
         return res.status(500).json({
             success: false,
             error: e.message || String(e)
