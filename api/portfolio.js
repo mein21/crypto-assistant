@@ -3,6 +3,7 @@
 // Returns ONLY what the AI produced. No hard-coded fallback values.
 
 const { IndicatorService } = require('../indicators');
+const { fetchPrices, fetchCandles } = require('./_marketData');
 
 const SYMBOLS = [
     'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT',
@@ -10,39 +11,24 @@ const SYMBOLS = [
 ];
 const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'openai/gpt-oss-120b:free';
 
-async function fetchPrices() {
-    const r = await fetch('https://api.binance.com/api/v3/ticker/price');
-    if (!r.ok) throw new Error(`Binance HTTP ${r.status}`);
-    const arr = await r.json();
-    if (!Array.isArray(arr)) throw new Error('Invalid Binance response');
-
-    const out = {};
-    for (const t of arr) {
-        if (SYMBOLS.includes(t.symbol)) {
-            out[t.symbol] = parseFloat(t.price);
-        }
-    }
-    return out;
-}
-
 async function computeIndicators(prices) {
-    const out = {};
-    for (const symbol of Object.keys(prices)) {
+    const symbols = Object.keys(prices);
+    const results = await Promise.all(symbols.map(async (symbol) => {
         try {
-            const candles = await IndicatorService.getCandles(symbol, '1h', 100);
-            if (!candles.length) continue;
-
-            out[symbol] = {
+            const candles = await fetchCandles(symbol, '1h', 100);
+            if (!candles.length) return null;
+            return [symbol, {
                 price: prices[symbol],
                 rsi: IndicatorService.calculateRSI(candles),
                 trend: IndicatorService.determineTrend(candles),
                 sr: IndicatorService.calculateSupportResistance(candles)
-            };
+            }];
         } catch (e) {
             console.error(`indicator ${symbol}:`, e.message);
+            return null;
         }
-    }
-    return out;
+    }));
+    return Object.fromEntries(results.filter(Boolean));
 }
 
 function buildPrompt(prices, indicators) {
@@ -166,15 +152,23 @@ module.exports = async (req, res) => {
         });
     }
 
+    const t0 = Date.now();
     try {
-        const prices = await fetchPrices();
+        console.log('[portfolio] fetching prices...');
+        const prices = await fetchPrices(SYMBOLS);
+        console.log(`[portfolio] prices: ${Object.keys(prices).length} symbols in ${Date.now() - t0}ms`);
         if (Object.keys(prices).length === 0) {
-            return res.status(502).json({ success: false, error: 'Не удалось получить цены с Binance' });
+            return res.status(502).json({ success: false, error: 'Не удалось получить цены' });
         }
 
+        const t1 = Date.now();
         const indicators = await computeIndicators(prices);
+        console.log(`[portfolio] indicators: ${Object.keys(indicators).length} symbols in ${Date.now() - t1}ms`);
         const prompt = buildPrompt(prices, indicators);
+
+        const t2 = Date.now();
         const content = await callOpenRouter(prompt, apiKey);
+        console.log(`[portfolio] openrouter responded in ${Date.now() - t2}ms`);
 
         const aiPairs = parseAIPairs(content);
         if (!aiPairs || aiPairs.length === 0) {
