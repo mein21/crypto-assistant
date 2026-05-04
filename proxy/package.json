@@ -1,0 +1,16 @@
+{
+  "name": "crypto-assistant-bybit-proxy-fly",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Express port of worker.js, deployed to Fly.io in a region that Bybit doesn't geo-block.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^4.21.0"
+  }
+}
