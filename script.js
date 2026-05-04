@@ -40,6 +40,43 @@ function setBybitStatus(text, kind) {
     bybitConfigStatus.textContent = text || '';
     bybitConfigStatus.dataset.kind = kind || '';
 }
+
+// Smoothly tween a numeric value displayed inside an element, then briefly
+// flash it. Falls back to plain assignment when reduced-motion is preferred.
+function animateNumber(el, target, opts = {}) {
+    if (!el) return;
+    const { duration = 700, decimals = 2, prefix = '', suffix = '' } = opts;
+    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const fromText = (el.textContent || '').replace(/[^\d.\-]/g, '');
+    const fromNum = parseFloat(fromText);
+    const targetNum = Number(target);
+    if (!isFinite(targetNum)) {
+        el.textContent = prefix + String(target) + suffix;
+        return;
+    }
+    if (reduce || !isFinite(fromNum)) {
+        el.textContent = prefix + targetNum.toFixed(decimals) + suffix;
+        flashValue(el);
+        return;
+    }
+    const start = performance.now();
+    const ease = (t) => 1 - Math.pow(1 - t, 3);
+    function tick(now) {
+        const t = Math.min(1, (now - start) / duration);
+        const v = fromNum + (targetNum - fromNum) * ease(t);
+        el.textContent = prefix + v.toFixed(decimals) + suffix;
+        if (t < 1) requestAnimationFrame(tick);
+        else flashValue(el);
+    }
+    requestAnimationFrame(tick);
+}
+
+function flashValue(el) {
+    if (!el || !el.classList) return;
+    el.classList.remove('flash-update');
+    void el.offsetWidth;
+    el.classList.add('flash-update');
+}
 function applyBybitVisibility() {
     const on = isBybitEnabled();
     if (bybitToggle) bybitToggle.checked = on;
@@ -128,7 +165,7 @@ async function loadBalance() {
         const r = await fetch('/api/balance', bybitFetchOptions());
         const d = await r.json();
         if (d.success) {
-            balanceEl.textContent = d.balance.toFixed(2);
+            animateNumber(balanceEl, d.balance, { decimals: 2 });
         } else {
             balanceEl.textContent = '--';
             if (d.error && bybitConfigStatus) setBybitStatus(d.error, 'err');
@@ -247,6 +284,7 @@ document.getElementById('portfolioAnalysis').style.display = 'none';
             
             pairEl.textContent = t.pair || '--';
             directionEl.textContent = t.direction || '--';
+            directionEl.dataset.dir = (t.direction || '').toUpperCase();
             entryPriceEl.textContent = t.entryPrice ? '$' + t.entryPrice.toLocaleString() : '--';
             tpEl.textContent = t.tp ? '$' + t.tp.toLocaleString() : '--';
             slEl.textContent = t.sl ? '$' + t.sl.toLocaleString() : '--';
