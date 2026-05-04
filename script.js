@@ -11,15 +11,40 @@ const balanceEl = document.getElementById('balance');
 const balanceWidget = document.getElementById('balanceWidget');
 const autoTradeCheckbox = document.getElementById('autoTrade');
 const bybitToggle = document.getElementById('bybitEnabled');
+const bybitConfig = document.getElementById('bybitConfig');
+const bybitWorkerUrlInput = document.getElementById('bybitWorkerUrl');
+const bybitConfigStatus = document.getElementById('bybitConfigStatus');
 
 const BYBIT_PREF_KEY = 'bybitIntegrationEnabled';
+const BYBIT_WORKER_URL_KEY = 'bybitWorkerUrl';
+
 function isBybitEnabled() {
     return localStorage.getItem(BYBIT_PREF_KEY) === '1';
+}
+function getBybitWorkerUrl() {
+    const raw = (localStorage.getItem(BYBIT_WORKER_URL_KEY) || '').trim().replace(/\/+$/, '');
+    if (!raw) return '';
+    try {
+        const u = new URL(raw);
+        return u.protocol === 'https:' ? u.origin : '';
+    } catch (_) { return ''; }
+}
+function bybitFetchOptions(extra = {}) {
+    const url = getBybitWorkerUrl();
+    const headers = { ...(extra.headers || {}) };
+    if (url) headers['X-Worker-Url'] = url;
+    return { ...extra, headers };
+}
+function setBybitStatus(text, kind) {
+    if (!bybitConfigStatus) return;
+    bybitConfigStatus.textContent = text || '';
+    bybitConfigStatus.dataset.kind = kind || '';
 }
 function applyBybitVisibility() {
     const on = isBybitEnabled();
     if (bybitToggle) bybitToggle.checked = on;
     if (balanceWidget) balanceWidget.style.display = on ? '' : 'none';
+    if (bybitConfig) bybitConfig.style.display = on ? '' : 'none';
     const paBtn = document.getElementById('portfolioAnalyzeBtn');
     if (paBtn) paBtn.style.display = on ? '' : 'none';
     if (!on) {
@@ -27,15 +52,61 @@ function applyBybitVisibility() {
         if (paSection) paSection.style.display = 'none';
     }
 }
+async function pingBybitWorker() {
+    const url = getBybitWorkerUrl();
+    if (!url) {
+        setBybitStatus('URL не задан — балансы и анализ-портфеля не будут работать.', 'warn');
+        return;
+    }
+    setBybitStatus('Проверяю прокси…', '');
+    try {
+        const r = await fetch(`${url}/health`, { method: 'GET', mode: 'cors' });
+        if (r.ok) setBybitStatus('Прокси отвечает ✓', 'ok');
+        else setBybitStatus(`Прокси вернул HTTP ${r.status}`, 'err');
+    } catch (e) {
+        setBybitStatus(`Прокси недоступен: ${e.message}`, 'err');
+    }
+}
+if (bybitWorkerUrlInput) {
+    bybitWorkerUrlInput.value = localStorage.getItem(BYBIT_WORKER_URL_KEY) || '';
+    const save = () => {
+        const raw = bybitWorkerUrlInput.value.trim().replace(/\/+$/, '');
+        localStorage.setItem(BYBIT_WORKER_URL_KEY, raw);
+        bybitWorkerUrlInput.value = raw;
+        if (!raw) { setBybitStatus('', ''); return; }
+        try {
+            const u = new URL(raw);
+            if (u.protocol !== 'https:') {
+                setBybitStatus('Нужен https://-URL.', 'err');
+                return;
+            }
+        } catch (_) {
+            setBybitStatus('Невалидный URL.', 'err');
+            return;
+        }
+        pingBybitWorker().then(() => { if (isBybitEnabled()) loadBalance(); });
+    };
+    bybitWorkerUrlInput.addEventListener('change', save);
+    bybitWorkerUrlInput.addEventListener('blur', save);
+    bybitWorkerUrlInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); bybitWorkerUrlInput.blur(); }
+    });
+}
 if (bybitToggle) {
     bybitToggle.addEventListener('change', () => {
         localStorage.setItem(BYBIT_PREF_KEY, bybitToggle.checked ? '1' : '0');
         applyBybitVisibility();
-        if (bybitToggle.checked) loadBalance();
-        else balanceEl.textContent = '--';
+        if (bybitToggle.checked) {
+            pingBybitWorker().then(() => loadBalance());
+        } else {
+            balanceEl.textContent = '--';
+        }
     });
 }
 applyBybitVisibility();
+if (isBybitEnabled() && getBybitWorkerUrl()) {
+    pingBybitWorker();
+}
 
 const pairEl = document.getElementById('pair');
 const directionEl = document.getElementById('direction');
@@ -54,35 +125,13 @@ async function loadBalance() {
         return;
     }
     try {
-        const r = await fetch('/api/balance');
+        const r = await fetch('/api/balance', bybitFetchOptions());
         const d = await r.json();
-        
         if (d.success) {
             balanceEl.textContent = d.balance.toFixed(2);
-        } else if (d.needClientRequest) {
-            // Server failed, try from browser
-            const resp = await fetch(d.url, {
-                method: 'GET',
-                headers: {
-                    'X-BAPI-API-KEY': d.apiKey,
-                    'X-BAPI-SIGN': d.signature,
-                    'X-BAPI-TIMESTAMP': d.timestamp,
-                    'X-BAPI-RECV-WINDOW': d.recvWindow,
-                    'Content-Type': 'application/json'
-                },
-                mode: 'cors'
-            });
-            const data = await resp.json();
-            if (data.retCode === 0 || data.result) {
-                const coins = data.result?.list?.[0]?.coin || [];
-                const usdt = coins.find(c => c.coin === 'USDT');
-                const balance = usdt ? parseFloat(usdt.walletBalance) : 0;
-                balanceEl.textContent = balance.toFixed(2);
-            } else {
-                balanceEl.textContent = '--';
-            }
         } else {
             balanceEl.textContent = '--';
+            if (d.error && bybitConfigStatus) setBybitStatus(d.error, 'err');
         }
     } catch (e) {
         console.error('Balance error:', e);
@@ -423,7 +472,7 @@ portfolioAnalyzeBtn.addEventListener('click', async () => {
     
     typeWriter();
     
-    const r = await fetch('/api/portfolio/analyze', {method: 'POST'});
+    const r = await fetch('/api/portfolio/analyze', bybitFetchOptions({method: 'POST'}));
     const d = await r.json();
     
     const loaderEl = document.getElementById('portfolioLoader');
@@ -542,11 +591,11 @@ const payload = {
         console.log('Sending:', payload);
         
         const endpoint = currentTrade.orderType === 'market' ? '/api/execute-market' : '/api/execute';
-        const r = await fetch(endpoint, {
+        const r = await fetch(endpoint, bybitFetchOptions({
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(payload)
-        });
+        }));
         const d = await r.json();
         console.log('Response:', d);
         
@@ -650,7 +699,7 @@ async function useAIRecommendation() {
     hideAllInputs();
     
     try {
-        const r = await fetch('/api/balance');
+        const r = await fetch('/api/balance', bybitFetchOptions());
         const d = await r.json();
         
         console.log('Balance response:', d);
@@ -685,7 +734,7 @@ async function executePairOrder(index) {
     }
     
     try {
-        const r = await fetch('/api/balance');
+        const r = await fetch('/api/balance', bybitFetchOptions());
         const d = await r.json();
         
         if (d.balance) {
@@ -694,7 +743,7 @@ async function executePairOrder(index) {
             
             const qty = parseFloat((usdtAmount / pair.entryPrice).toFixed(4));
             
-            const r2 = await fetch('/api/execute', {
+            const r2 = await fetch('/api/execute', bybitFetchOptions({
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({
@@ -705,7 +754,7 @@ async function executePairOrder(index) {
                     tp: pair.tp,
                     sl: pair.sl
                 })
-            });
+            }));
             const result = await r2.json();
             
             if (result.success) {

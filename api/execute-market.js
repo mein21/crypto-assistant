@@ -3,7 +3,7 @@
 // Body: { symbol, side, qty }
 // side: "Buy" = LONG, "Sell" = SHORT.
 
-const { placeFuturesOrder, setCors, errorPayload } = require('./_bybit');
+const { placeFuturesOrder, getWorkerOverrides, setCors, errorPayload } = require('./_bybit');
 
 async function readJsonBody(req) {
     if (req.body && typeof req.body === 'object') return req.body;
@@ -43,7 +43,8 @@ module.exports = async (req, res) => {
             return res.status(400).json({ success: false, error: `Неверное количество: ${qty}` });
         }
 
-        const result = await placeFuturesOrder(symbol, side, qty);
+        const opts = getWorkerOverrides(req);
+        const result = await placeFuturesOrder(symbol, side, qty, null, null, null, opts);
         return res.status(200).json({ success: true, result });
     } catch (e) {
         console.error('execute-market error:', e.message);

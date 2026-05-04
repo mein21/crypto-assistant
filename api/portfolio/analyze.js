@@ -10,6 +10,7 @@ const {
     getAllCoins,
     getOpenOrders,
     getOrderHistory,
+    getWorkerOverrides,
     setCors,
     errorPayload
 } = require('../_bybit');
@@ -64,12 +65,13 @@ module.exports = async (req, res) => {
     try {
         const t0 = Date.now();
 
+        const opts = getWorkerOverrides(req);
         const [rawBalance, coins, prices, openOrders, orderHistory] = await Promise.all([
-            getUSDTBalance().catch(() => 0),
-            getAllCoins().catch(() => ({})),
+            getUSDTBalance(opts).catch(() => 0),
+            getAllCoins(opts).catch(() => ({})),
             fetchPrices(SUPPORTED),
-            getOpenOrders('linear').catch(() => []),
-            getOrderHistory('linear', 100).catch(() => [])
+            getOpenOrders('linear', opts).catch(() => []),
+            getOrderHistory('linear', 100, opts).catch(() => [])
         ]);
         console.log(`[portfolio/analyze] bybit+prices fetched in ${Date.now() - t0}ms`);
 

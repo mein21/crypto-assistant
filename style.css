@@ -148,6 +148,66 @@ body {
     position: relative;
 }
 
+.bybit-config {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 16px;
+    padding: 12px 28px;
+    border-bottom: 1px solid var(--border-subtle);
+    background: rgba(0, 240, 255, 0.02);
+    font-size: 0.8rem;
+}
+.bybit-config-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1 1 280px;
+}
+.bybit-config-text {
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+.bybit-config-input {
+    flex: 1;
+    min-width: 0;
+    background: rgba(0, 0, 0, 0.4);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.78rem;
+    padding: 8px 10px;
+    transition: border-color 0.2s ease;
+}
+.bybit-config-input:focus {
+    outline: none;
+    border-color: var(--accent-cyan);
+    box-shadow: 0 0 0 1px rgba(0, 240, 255, 0.3);
+}
+.bybit-config-status {
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    font-family: 'JetBrains Mono', monospace;
+}
+.bybit-config-status[data-kind="ok"] { color: var(--accent-emerald); }
+.bybit-config-status[data-kind="warn"] { color: var(--warning); }
+.bybit-config-status[data-kind="err"] { color: var(--loss); }
+.bybit-config-hint {
+    flex: 1 1 100%;
+    color: var(--text-dim);
+    font-size: 0.7rem;
+}
+.bybit-config-hint code {
+    background: rgba(0, 0, 0, 0.4);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--accent-cyan);
+}
+
 .status-bar::after {
     content: '';
     position: absolute;

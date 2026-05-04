@@ -1,7 +1,7 @@
 // Vercel Serverless Function: POST /api/portfolio/close
 // Cancels every open Bybit linear order via the Cloudflare Worker proxy.
 
-const { getOpenOrders, cancelOrder, setCors, errorPayload } = require('../_bybit');
+const { getOpenOrders, cancelOrder, getWorkerOverrides, setCors, errorPayload } = require('../_bybit');
 
 module.exports = async (req, res) => {
     setCors(res);
@@ -11,11 +11,12 @@ module.exports = async (req, res) => {
     }
 
     try {
-        const list = await getOpenOrders('linear');
+        const opts = getWorkerOverrides(req);
+        const list = await getOpenOrders('linear', opts);
         const results = [];
         for (const order of list) {
             try {
-                await cancelOrder(order.orderId, order.symbol, 'linear');
+                await cancelOrder(order.orderId, order.symbol, 'linear', opts);
                 results.push({ symbol: order.symbol, orderId: order.orderId, status: 'cancelled' });
             } catch (e) {
                 results.push({ symbol: order.symbol, orderId: order.orderId, error: e.message });

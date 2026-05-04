@@ -1,7 +1,7 @@
 // Vercel Serverless Function: GET /api/pending
 // Returns Bybit open orders (linear futures by default).
 
-const { getOpenOrders, setCors, errorPayload } = require('./_bybit');
+const { getOpenOrders, getWorkerOverrides, setCors, errorPayload } = require('./_bybit');
 
 module.exports = async (req, res) => {
     setCors(res);
@@ -12,7 +12,8 @@ module.exports = async (req, res) => {
 
     try {
         const category = (req.query && req.query.category) || 'linear';
-        const orders = await getOpenOrders(category);
+        const opts = getWorkerOverrides(req);
+        const orders = await getOpenOrders(category, opts);
         return res.status(200).json({ success: true, orders });
     } catch (e) {
         console.error('pending error:', e.message);

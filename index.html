@@ -35,7 +35,16 @@
                     </span>
                 </div>
             </div>
-            
+
+            <div class="bybit-config" id="bybitConfig" style="display:none;">
+                <label class="bybit-config-label">
+                    <span class="bybit-config-text">URL прокси:</span>
+                    <input type="url" id="bybitWorkerUrl" class="bybit-config-input" placeholder="https://abc-def.trycloudflare.com" autocomplete="off" spellcheck="false">
+                </label>
+                <span class="bybit-config-status" id="bybitConfigStatus"></span>
+                <span class="bybit-config-hint">Запусти <code>node launch.mjs</code> у себя на компе и вставь URL, который он выведет.</span>
+            </div>
+
             <div class="button-grid">
                 <button id="analyzeBtn" class="preset main-action">
                     <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
