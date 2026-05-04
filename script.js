@@ -9,7 +9,6 @@ const results = document.getElementById('results');
 
 const balanceEl = document.getElementById('balance');
 const balanceWidget = document.getElementById('balanceWidget');
-const autoTradeCheckbox = document.getElementById('autoTrade');
 const bybitToggle = document.getElementById('bybitEnabled');
 const bybitConfig = document.getElementById('bybitConfig');
 const bybitWorkerUrlInput = document.getElementById('bybitWorkerUrl');
@@ -134,15 +133,24 @@ if (bybitToggle) {
         localStorage.setItem(BYBIT_PREF_KEY, bybitToggle.checked ? '1' : '0');
         applyBybitVisibility();
         if (bybitToggle.checked) {
-            pingBybitWorker().then(() => loadBalance());
+            if (getBybitWorkerUrl()) {
+                pingBybitWorker().then(() => loadBalance());
+            } else {
+                setBybitStatus('URL не задан — балансы и анализ-портфеля не будут работать.', 'warn');
+            }
         } else {
+            setBybitStatus('', '');
             balanceEl.textContent = '--';
         }
     });
 }
 applyBybitVisibility();
-if (isBybitEnabled() && getBybitWorkerUrl()) {
-    pingBybitWorker();
+if (isBybitEnabled()) {
+    if (getBybitWorkerUrl()) {
+        pingBybitWorker();
+    } else {
+        setBybitStatus('URL не задан — балансы и анализ-портфеля не будут работать.', 'warn');
+    }
 }
 
 const pairEl = document.getElementById('pair');
@@ -197,11 +205,15 @@ async function runAnalysis() {
     currentButton = presetBtn;
     const pos = getButtonPosition(presetBtn);
     
-document.getElementById('portfolioAnalysis').style.display = 'none';
+    document.getElementById('portfolioAnalysis').style.display = 'none';
     document.getElementById('bestTrade').style.display = 'none';
     document.getElementById('tradeActions').style.display = 'none';
-    document.getElementById('executeBtn').style.display = 'none';
     currentTrade = null;
+
+    const executeBtnReset = document.getElementById('executeBtn');
+    executeBtnReset.style.display = '';
+    executeBtnReset.disabled = false;
+    executeBtnReset.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg> Выставить';
     
     const loader = document.getElementById('portfolioLoader');
     loader.classList.add('active');
@@ -298,8 +310,8 @@ document.getElementById('portfolioAnalysis').style.display = 'none';
             reasonEl.textContent = t.reason || '';
             
             if (t.positionSize) {
-                const coin = t.pair ? t.pair.split('/')[0] : '';
-                positionSizeEl.textContent = t.positionSize.toFixed(4) + ' ' + coin;
+                const coin = (t.pair || '').replace(/USDT$|USDC$|USD$/, '');
+                positionSizeEl.textContent = t.positionSize.toFixed(4) + (coin ? ' ' + coin : '');
             }
             
 if (t.executed) {
@@ -751,18 +763,14 @@ async function useAIRecommendation() {
             
             console.log('Updated trade:', currentTrade);
             
-            document.getElementById('positionInfo').textContent = '$' + usdtAmount;
-            document.getElementById('priceInfo').textContent = '$' + currentTrade.entryPrice.toLocaleString();
+            document.getElementById('positionInfo').textContent = '$' + usdtAmount.toFixed(2);
+            document.getElementById('priceInfo').textContent = currentTrade.entryPrice ? '$' + currentTrade.entryPrice.toLocaleString() : '--';
         } else {
             alert('Не удалось получить баланс');
         }
     } catch (e) {
         alert('Ошибка получения баланса: ' + e.message);
     }
-}
-
-function showExecuteButton() {
-    // Execute button is now always visible in tradeActions
 }
 
 async function executePairOrder(index) {
