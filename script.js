@@ -8,7 +8,34 @@ const loader = document.getElementById('loader');
 const results = document.getElementById('results');
 
 const balanceEl = document.getElementById('balance');
+const balanceWidget = document.getElementById('balanceWidget');
 const autoTradeCheckbox = document.getElementById('autoTrade');
+const bybitToggle = document.getElementById('bybitEnabled');
+
+const BYBIT_PREF_KEY = 'bybitIntegrationEnabled';
+function isBybitEnabled() {
+    return localStorage.getItem(BYBIT_PREF_KEY) === '1';
+}
+function applyBybitVisibility() {
+    const on = isBybitEnabled();
+    if (bybitToggle) bybitToggle.checked = on;
+    if (balanceWidget) balanceWidget.style.display = on ? '' : 'none';
+    const paBtn = document.getElementById('portfolioAnalyzeBtn');
+    if (paBtn) paBtn.style.display = on ? '' : 'none';
+    if (!on) {
+        const paSection = document.getElementById('portfolioAnalysis');
+        if (paSection) paSection.style.display = 'none';
+    }
+}
+if (bybitToggle) {
+    bybitToggle.addEventListener('change', () => {
+        localStorage.setItem(BYBIT_PREF_KEY, bybitToggle.checked ? '1' : '0');
+        applyBybitVisibility();
+        if (bybitToggle.checked) loadBalance();
+        else balanceEl.textContent = '--';
+    });
+}
+applyBybitVisibility();
 
 const pairEl = document.getElementById('pair');
 const directionEl = document.getElementById('direction');
@@ -22,6 +49,10 @@ const positionSizeEl = document.getElementById('positionSize');
 const statusValueEl = document.getElementById('statusValue');
 
 async function loadBalance() {
+    if (!isBybitEnabled()) {
+        balanceEl.textContent = '--';
+        return;
+    }
     try {
         const r = await fetch('/api/balance');
         const d = await r.json();
@@ -327,6 +358,10 @@ portfolioBtn.addEventListener('click', async () => {
 // NEW: Анализ текущего портфеля (процент закрытия)
 const portfolioAnalyzeBtn = document.getElementById('portfolioAnalyzeBtn');
 portfolioAnalyzeBtn.addEventListener('click', async () => {
+  if (!isBybitEnabled()) {
+    alert('Bybit-интеграция выключена. Включи переключатель "Bybit" в шапке, если у тебя настроен прокси.');
+    return;
+  }
   try {
     currentButton = portfolioAnalyzeBtn;
     const pos = getButtonPosition(portfolioAnalyzeBtn);

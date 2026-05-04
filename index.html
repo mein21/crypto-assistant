@@ -12,13 +12,20 @@
         
         <section class="card">
             <div class="status-bar">
-                <div class="balance">
+                <div class="balance" id="balanceWidget">
                     <span class="label">Баланс:</span>
                     <span class="value" id="balance">--</span>
                     <span class="unit">USDT</span>
                 </div>
                 <div class="config">
                     <span class="risk" data-tooltip="Процент риска на сделку">Риск: <span id="riskPercent">4%</span></span>
+                    <span class="auto" title="Bybit-интеграция: баланс и анализ портфеля. Выключи, если ключи не настроены.">
+                        <label class="switch">
+                            <input type="checkbox" id="bybitEnabled">
+                            <span class="slider"></span>
+                        </label>
+                        <span class="auto-label">Bybit</span>
+                    </span>
                     <span class="auto">
                         <label class="switch">
                             <input type="checkbox" id="autoTrade">
