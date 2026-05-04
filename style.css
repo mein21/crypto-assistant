@@ -1111,6 +1111,31 @@ svg { display: block; }
 }
 [data-tooltip]:hover::after { opacity: 1; transform: translateX(-50%) translateY(0); }
 
+/* -- Table cell hooks (for desktop labels match header order, mobile cards) - */
+.table-btn-label {
+    margin-left: 4px;
+    font-size: 0.74rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    display: none; /* desktop: icon-only button */
+}
+.table .dir {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+}
+.table .dir .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: currentColor;
+    box-shadow: 0 0 8px currentColor;
+}
+.table .dir.long  { color: var(--accent-emerald); }
+.table .dir.short { color: var(--loss); }
+
 /* -- Responsive ---------------------------------------------------------- */
 @media (max-width: 720px) {
     .container { padding-top: 24px; gap: 18px; }
@@ -1126,11 +1151,182 @@ svg { display: block; }
     .best-trade { padding: 18px; border-radius: var(--radius-md); }
     .trade-prices { grid-template-columns: 1fr 1fr; padding: 10px 12px; }
     .trade-actions { width: 100%; margin-left: 0; }
-    .results, .portfolio-analysis, .comments { padding-left: 20px; padding-right: 20px; margin-left: 20px; margin-right: 20px; }
-    .results { padding-left: 0; padding-right: 0; padding-top: 0; }
+    .portfolio-analysis, .comments { padding-left: 20px; padding-right: 20px; }
     .results { margin: 0 20px 20px; padding: 0; }
-    .table { font-size: 0.8rem; min-width: 640px; }
-    .table thead th, .table tbody td { padding: 10px 11px; }
+
+    /* "5 пар" table → vertical card stack */
+    .results .table-wrap {
+        background: transparent;
+        border: 0;
+        overflow: visible;
+    }
+    .results .table {
+        min-width: 0;
+        display: block;
+        font-size: 0.86rem;
+    }
+    .results .table thead { display: none; }
+    .results .table tbody { display: block; }
+    .results .table tbody tr {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        column-gap: 10px;
+        row-gap: 6px;
+        padding: 14px 16px;
+        margin-bottom: 12px;
+        background: rgba(20, 18, 32, 0.7);
+        backdrop-filter: blur(10px);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        position: relative;
+        box-shadow: none;
+    }
+    .results .table tbody tr.long  { border-left: 3px solid var(--accent-emerald); }
+    .results .table tbody tr.short { border-left: 3px solid var(--loss); }
+    .results .table tbody tr:hover { background: rgba(20, 18, 32, 0.85); }
+
+    .results .table tbody td {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 4px 0;
+        border: 0;
+        font-family: var(--font-mono);
+        font-size: 0.82rem;
+        color: var(--text-primary);
+        word-break: break-word;
+    }
+    .results .table tbody td::before {
+        content: attr(data-label);
+        font-family: var(--font-ui);
+        font-size: 0.66rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        color: var(--text-secondary);
+        flex-shrink: 0;
+    }
+
+    /* Header row of the card: # + Pair span the full width (each their own row) */
+    .results .table tbody td.cell-num {
+        grid-column: 1 / -1;
+        order: -2;
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        padding: 0 0 6px;
+        margin-bottom: 4px;
+        border-bottom: 1px solid var(--border);
+        color: var(--text-secondary);
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-family: var(--font-ui);
+        font-weight: 600;
+    }
+    .results .table tbody td.cell-num::before {
+        content: 'Сделка №';
+        font-size: 0.66rem;
+        margin: 0;
+    }
+    .results .table tbody tr.long  > td.cell-num::after { content: 'LONG';  color: var(--accent-emerald); margin-left: auto; font-weight: 700; letter-spacing: 0.06em; }
+    .results .table tbody tr.short > td.cell-num::after { content: 'SHORT'; color: var(--loss); margin-left: auto; font-weight: 700; letter-spacing: 0.06em; }
+    .results .table tbody td.cell-num + td.cell-pair {
+        grid-column: 1 / -1;
+        order: -1;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0;
+        padding: 0 0 8px;
+        margin-bottom: 4px;
+    }
+    .results .table tbody td.cell-pair::before {
+        font-size: 0.62rem;
+        margin-bottom: 2px;
+    }
+    .results .table tbody td.cell-pair strong {
+        font-size: 1.25rem;
+        font-weight: 700;
+        background: var(--aurora);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        background-size: 200% 200%;
+        animation: aurora-shift 14s ease-in-out infinite;
+        letter-spacing: -0.01em;
+    }
+
+    /* Direction cell hidden on mobile — already shown in cell-num header */
+    .results .table tbody td.cell-dir { display: none; }
+
+    /* Each price gets its own column slot inside the 2-col grid */
+    .results .table tbody td.cell-entry,
+    .results .table tbody td.cell-tp,
+    .results .table tbody td.cell-sl,
+    .results .table tbody td.cell-conf {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 2px;
+        padding: 6px 10px;
+        background: rgba(0, 0, 0, 0.25);
+        border: 1px solid var(--border-subtle);
+        border-radius: 8px;
+    }
+    .results .table tbody td.cell-tp { color: var(--accent-emerald); }
+    .results .table tbody td.cell-sl { color: var(--loss); }
+    .results .table tbody td.cell-conf { color: var(--brand-cyan); }
+    .results .table tbody td.cell-entry::before,
+    .results .table tbody td.cell-tp::before,
+    .results .table tbody td.cell-sl::before,
+    .results .table tbody td.cell-conf::before {
+        font-size: 0.6rem;
+        color: var(--text-muted);
+    }
+
+    .results .table tbody td.cell-reason {
+        grid-column: 1 / -1;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 4px;
+        padding: 8px 10px;
+        margin-top: 2px;
+        background: rgba(255, 255, 255, 0.025);
+        border-left: 2px solid var(--brand-cyan);
+        border-radius: 0 8px 8px 0;
+        font-family: var(--font-ui);
+        font-size: 0.8rem;
+        line-height: 1.5;
+        color: var(--text-secondary);
+        white-space: normal;
+        max-width: none;
+    }
+    .results .table tbody td.cell-reason::before { font-size: 0.62rem; }
+
+    .results .table tbody td.cell-action {
+        grid-column: 1 / -1;
+        padding: 6px 0 0;
+        margin-top: 4px;
+    }
+    .results .table tbody td.cell-action::before { content: ''; margin: 0; display: none; }
+    .results .table tbody td.cell-action button {
+        width: 100%;
+        padding: 11px 16px;
+        border-radius: var(--radius-sm);
+        font-size: 0.82rem;
+        gap: 8px;
+        justify-content: center;
+    }
+    .results .table tbody td.cell-action .table-btn-label { display: inline; }
+
+    .results .table tbody tr {
+        animation: fade-up 0.4s var(--easing) both;
+    }
+
+    /* Portfolio analysis tables stay tabular but tighter */
+    .portfolio-analysis .table { font-size: 0.78rem; min-width: 0; }
+    .portfolio-analysis .table thead th,
+    .portfolio-analysis .table tbody td { padding: 9px 10px; }
 }
 
 @media (max-width: 480px) {
@@ -1146,6 +1342,9 @@ svg { display: block; }
     .trade-pair .coin { font-size: 1.2rem; }
     .trade-prices { grid-template-columns: 1fr; }
     .bybit-config { padding: 10px 16px; }
+    .results { margin: 0 16px 16px; }
+    .results .table tbody tr { padding: 12px 14px; }
+    .results .table tbody td.cell-pair strong { font-size: 1.15rem; }
 }
 
 /* Reduced motion */

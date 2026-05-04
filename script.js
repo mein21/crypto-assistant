@@ -412,19 +412,20 @@ portfolioBtn.addEventListener('click', async () => {
         portfolioPairs = d.pairs;
         tbody.innerHTML = d.pairs.map((p, i) => `
             <tr class="${p.direction.toLowerCase()}">
-                <td>${i + 1}</td>
-                <td><strong>${p.pair}</strong></td>
-                <td><span class="dir ${p.direction.toLowerCase()}"><span class="dot"></span>${p.direction}</span></td>
-                <td>$${p.entryPrice?.toFixed(2) || '-'}</td>
-                <td>${p.tp ? '$' + p.tp.toFixed(2) : '-'}</td>
-                <td>${p.sl ? '$' + p.sl.toFixed(2) : '-'}</td>
-                <td>${p.confidence}%</td>
-                <td>${p.reason || '-'}</td>
-                <td>
+                <td data-label="#" class="cell-num">${i + 1}</td>
+                <td data-label="Пара" class="cell-pair"><strong>${p.pair}</strong></td>
+                <td data-label="Направление" class="cell-dir"><span class="dir ${p.direction.toLowerCase()}"><span class="dot"></span>${p.direction}</span></td>
+                <td data-label="Вход" class="cell-entry">$${p.entryPrice?.toFixed(2) || '-'}</td>
+                <td data-label="TP" class="cell-tp">${p.tp ? '$' + p.tp.toFixed(2) : '-'}</td>
+                <td data-label="SL" class="cell-sl">${p.sl ? '$' + p.sl.toFixed(2) : '-'}</td>
+                <td data-label="Уверенность" class="cell-conf">${p.confidence}%</td>
+                <td data-label="Обоснование" class="cell-reason">${p.reason || '-'}</td>
+                <td class="cell-action">
                     <button class="table-btn" onclick="executePairOrder(${i})">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M5 12h14M12 5l7 7-7 7"/>
                         </svg>
+                        <span class="table-btn-label">Выставить</span>
                     </button>
                 </td>
             </tr>
