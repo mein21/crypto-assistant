@@ -7,11 +7,55 @@
 const { fetchPrices, fetchCandles } = require('./_marketData');
 const { buildIndicatorBundle, formatIndicatorLine } = require('../utils/indicatorBundle');
 
-const SYMBOLS = [
+// Default symbol set when the client doesn't pass one. Must be a subset of
+// the backend's supported pairs (see PRICE_DECIMALS in api/_bybit.js).
+const DEFAULT_SYMBOLS = [
     'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT',
     'ADAUSDT', 'DOGEUSDT', 'DOTUSDT', 'AVAXUSDT'
 ];
+const SUPPORTED_SYMBOLS = new Set([
+    'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT',
+    'ADAUSDT', 'DOGEUSDT', 'DOTUSDT', 'AVAXUSDT',
+    'LTCUSDT', 'LINKUSDT', 'MATICUSDT'
+]);
 const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'openai/gpt-oss-120b:free';
+
+// Read POST body — Vercel/Node populates `req.body` for JSON requests, but
+// some adapters (Cloudflare Pages, custom Express) leave it as a stream, so
+// we fall back to manual parsing when needed.
+async function readJsonBody(req) {
+    if (req.body && typeof req.body === 'object') return req.body;
+    if (typeof req.body === 'string') {
+        try { return JSON.parse(req.body); } catch (_) { return {}; }
+    }
+    return new Promise((resolve) => {
+        let data = '';
+        req.on('data', chunk => { data += chunk; });
+        req.on('end', () => {
+            if (!data) return resolve({});
+            try { resolve(JSON.parse(data)); } catch (_) { resolve({}); }
+        });
+        req.on('error', () => resolve({}));
+    });
+}
+
+// Validate a list of user-supplied symbols against the supported allowlist.
+// Returns a deduped array of valid uppercase symbols (or the default set if
+// nothing valid was provided).
+function pickSymbols(input) {
+    if (!Array.isArray(input)) return DEFAULT_SYMBOLS.slice();
+    const seen = new Set();
+    const out = [];
+    for (const raw of input) {
+        if (typeof raw !== 'string') continue;
+        const sym = raw.trim().toUpperCase();
+        if (!SUPPORTED_SYMBOLS.has(sym)) continue;
+        if (seen.has(sym)) continue;
+        seen.add(sym);
+        out.push(sym);
+    }
+    return out.length ? out : DEFAULT_SYMBOLS.slice();
+}
 
 async function computeIndicators(prices) {
     const symbols = Object.keys(prices);
@@ -160,8 +204,10 @@ module.exports = async (req, res) => {
 
     const t0 = Date.now();
     try {
-        console.log('[portfolio] fetching prices...');
-        const prices = await fetchPrices(SYMBOLS);
+        const body = req.method === 'POST' ? await readJsonBody(req) : {};
+        const symbols = pickSymbols(body && body.symbols);
+        console.log(`[portfolio] fetching prices for ${symbols.length} symbols: ${symbols.join(',')}`);
+        const prices = await fetchPrices(symbols);
         console.log(`[portfolio] prices: ${Object.keys(prices).length} symbols in ${Date.now() - t0}ms`);
         if (Object.keys(prices).length === 0) {
             return res.status(502).json({ success: false, error: 'Не удалось получить цены' });

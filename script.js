@@ -17,6 +17,103 @@ const bybitConfigStatus = document.getElementById('bybitConfigStatus');
 
 const BYBIT_PREF_KEY = 'bybitIntegrationEnabled';
 const BYBIT_WORKER_URL_KEY = 'bybitWorkerUrl';
+const SELECTED_PAIRS_KEY = 'selectedPairs';
+
+// All Bybit USDT-perp pairs the backend has decimal/tick-size data for
+// (see `PRICE_DECIMALS` in api/_bybit.js). Keep this in sync if you add new
+// supported pairs server-side.
+const ALL_PAIRS = [
+    'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT',
+    'ADAUSDT', 'DOGEUSDT', 'DOTUSDT', 'AVAXUSDT',
+    'LTCUSDT', 'LINKUSDT', 'MATICUSDT'
+];
+
+// Empty set means "use all pairs" (backend default). Persisted in localStorage.
+function getSelectedPairs() {
+    try {
+        const raw = localStorage.getItem(SELECTED_PAIRS_KEY);
+        if (!raw) return [];
+        const arr = JSON.parse(raw);
+        if (!Array.isArray(arr)) return [];
+        return arr.filter(p => typeof p === 'string' && ALL_PAIRS.includes(p));
+    } catch (_) { return []; }
+}
+function setSelectedPairs(pairs) {
+    const clean = (pairs || []).filter(p => ALL_PAIRS.includes(p));
+    if (clean.length === 0 || clean.length === ALL_PAIRS.length) {
+        localStorage.removeItem(SELECTED_PAIRS_KEY);
+    } else {
+        localStorage.setItem(SELECTED_PAIRS_KEY, JSON.stringify(clean));
+    }
+    updatePairSelectorCount();
+}
+function activeSymbols() {
+    const sel = getSelectedPairs();
+    return sel.length ? sel : ALL_PAIRS.slice();
+}
+function updatePairSelectorCount() {
+    const countEl = document.getElementById('pairSelectorCount');
+    if (!countEl) return;
+    const sel = getSelectedPairs();
+    if (sel.length === 0) {
+        countEl.textContent = `все ${ALL_PAIRS.length}`;
+    } else {
+        countEl.textContent = `${sel.length} из ${ALL_PAIRS.length}`;
+    }
+}
+function renderPairSelector() {
+    const body = document.getElementById('pairSelectorBody');
+    if (!body) return;
+    body.innerHTML = '';
+
+    const controls = document.createElement('div');
+    controls.className = 'pair-selector-controls';
+    controls.innerHTML = `
+        <button type="button" class="pair-bulk" data-action="all">Все ${ALL_PAIRS.length}</button>
+        <button type="button" class="pair-bulk" data-action="majors">Только майоры</button>
+    `;
+    body.appendChild(controls);
+
+    const grid = document.createElement('div');
+    grid.className = 'pair-chips';
+    body.appendChild(grid);
+
+    const sel = new Set(activeSymbols());
+    ALL_PAIRS.forEach(p => {
+        const id = `pair-${p}`;
+        const wrap = document.createElement('label');
+        wrap.className = 'pair-chip';
+        wrap.htmlFor = id;
+        wrap.innerHTML = `
+            <input type="checkbox" id="${id}" value="${p}" ${sel.has(p) ? 'checked' : ''}>
+            <span>${p.replace(/USDT$/, '')}</span>
+        `;
+        grid.appendChild(wrap);
+    });
+
+    grid.addEventListener('change', () => {
+        const checked = [...grid.querySelectorAll('input[type="checkbox"]:checked')].map(i => i.value);
+        if (checked.length === 0) {
+            // Don't allow zero selection — fall back to default (= all).
+            setSelectedPairs([]);
+        } else {
+            setSelectedPairs(checked);
+        }
+    });
+
+    controls.addEventListener('click', (e) => {
+        const action = e.target?.dataset?.action;
+        if (action === 'all') {
+            setSelectedPairs([]);
+            renderPairSelector();
+        } else if (action === 'majors') {
+            setSelectedPairs(['BTCUSDT', 'ETHUSDT', 'SOLUSDT']);
+            renderPairSelector();
+        }
+    });
+
+    updatePairSelectorCount();
+}
 
 function isBybitEnabled() {
     return localStorage.getItem(BYBIT_PREF_KEY) === '1';
@@ -437,7 +534,9 @@ async function runAnalysis() {
     positionSizeEl.textContent = '--';
     
     try {
-        const r = await fetch('/api/analyze');
+        const sel = getSelectedPairs();
+        const url = sel.length ? `/api/analyze?symbols=${encodeURIComponent(sel.join(','))}` : '/api/analyze';
+        const r = await fetch(url);
         const d = await r.json();
         
         loader.classList.remove('show');
@@ -568,7 +667,12 @@ portfolioBtn.addEventListener('click', async () => {
     typeWriter();
     
     try {
-        const r = await fetch('/api/portfolio', {method: 'POST'});
+        const sel = getSelectedPairs();
+        const r = await fetch('/api/portfolio', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(sel.length ? { symbols: sel } : {})
+        });
         const d = await r.json();
         
         const loaderEl = document.getElementById('portfolioLoader');
@@ -825,6 +929,7 @@ document.addEventListener('keydown', function(e) {
 });
 
 loadBalance();
+renderPairSelector();
 
 async function executeTrade() {
     console.log('currentTrade:', currentTrade);
@@ -934,68 +1039,182 @@ function hideAllInputs() {
     }
 }
 
+// Bybit minimum notional for most USDT-perp pairs ($5). Order under this is
+// rejected by the exchange with a confusing retCode, so we filter client-side.
+const BYBIT_MIN_NOTIONAL_USDT = 5;
+// Slippage thresholds vs the AI's reference entry price (or last known mark).
+// Beyond `WARN`, ask the user to confirm; beyond `BLOCK`, refuse — almost
+// always a typo (extra zero, wrong decimal point) and would burn money.
+const PRICE_DEVIATION_WARN_PCT = 5;
+const PRICE_DEVIATION_BLOCK_PCT = 20;
+
 function showManualInput() {
     hideAllInputs();
-    
+
     const tradeActions = document.getElementById('tradeActions');
-    
+
+    const suggestedUsdt = (() => {
+        if (Number.isFinite(currentTrade?.usdtAmount) && currentTrade.usdtAmount > 0) {
+            return currentTrade.usdtAmount.toFixed(2);
+        }
+        if (Number.isFinite(currentTrade?.positionSize) && Number.isFinite(currentTrade?.entryPrice)) {
+            return (currentTrade.positionSize * currentTrade.entryPrice).toFixed(2);
+        }
+        return '';
+    })();
+    const suggestedPrice = Number.isFinite(currentTrade?.entryPrice) && currentTrade.entryPrice > 0
+        ? currentTrade.entryPrice
+        : null;
+
     const wrap = document.createElement('div');
     wrap.className = 'manual-input-wrap';
     wrap.innerHTML = `
         <div class="manual-input">
-            <label>Тип ордера</label>
+            <label for="orderType">Тип ордера</label>
             <select id="orderType" class="order-type-select">
                 <option value="limit">Лимитный</option>
                 <option value="market">Рыночный</option>
             </select>
         </div>
         <div class="manual-input">
-            <label>USDT</label>
-            <input type="number" id="manualQty" step="1" placeholder="${currentTrade?.usdtAmount?.toFixed(2) || currentTrade?.positionSize ? (currentTrade.positionSize * currentTrade.entryPrice).toFixed(2) : ''}">
+            <label for="manualQty">Сумма (USDT) <span class="required" aria-hidden="true">*</span></label>
+            <input type="number" id="manualQty" step="0.01" min="0" inputmode="decimal" aria-required="true" autocomplete="off">
+            <small class="input-hint">
+                Минимум $${BYBIT_MIN_NOTIONAL_USDT} (Bybit notional)${suggestedUsdt ? `. <button type="button" class="input-suggest" data-target="manualQty" data-value="${suggestedUsdt}">Подставить $${suggestedUsdt}</button>` : ''}
+            </small>
         </div>
-        <div class="manual-input price-input-wrap">
-            <label>Цена входа</label>
-            <input type="number" id="manualPrice" step="0.01" placeholder="${currentTrade?.entryPrice || ''}">
+        <div class="manual-input price-input-wrap" id="priceInputWrap">
+            <label for="manualPrice">Лимит-цена (USDT) <span class="required" aria-hidden="true">*</span></label>
+            <input type="number" id="manualPrice" step="0.0001" min="0" inputmode="decimal" aria-required="true" autocomplete="off">
+            <small class="input-hint" id="priceHint">
+                ${suggestedPrice ? `Рекомендация AI: $${suggestedPrice.toLocaleString()}. <button type="button" class="input-suggest" data-target="manualPrice" data-value="${suggestedPrice}">Подставить</button>` : 'Введи лимит-цену в USDT'}
+            </small>
         </div>
-        <button class="action-btn ai-btn" onclick="applyManualInput()">Применить</button>
+        <div class="manual-input market-price-chip" id="marketPriceChip" hidden>
+            <span class="chip chip-market">Цена ордера: <strong>рыночная</strong></span>
+        </div>
+        <button class="action-btn ai-btn" id="applyManualBtn" type="button">Применить</button>
     `;
     tradeActions.appendChild(wrap);
-    
-    document.getElementById('orderType').addEventListener('change', function() {
-        const priceInput = document.getElementById('manualPrice');
-        if (this.value === 'market') {
-            priceInput.disabled = true;
-            priceInput.placeholder = 'Рыночная';
-        } else {
-            priceInput.disabled = false;
-            priceInput.placeholder = currentTrade?.entryPrice || '';
-        }
+
+    wrap.querySelectorAll('.input-suggest').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const target = document.getElementById(btn.dataset.target);
+            if (target) {
+                target.value = btn.dataset.value;
+                target.dispatchEvent(new Event('input', { bubbles: true }));
+                target.focus();
+            }
+        });
     });
+
+    document.getElementById('applyManualBtn').addEventListener('click', applyManualInput);
+
+    const orderTypeSel = document.getElementById('orderType');
+    const priceWrap = document.getElementById('priceInputWrap');
+    const marketChip = document.getElementById('marketPriceChip');
+    const priceInput = document.getElementById('manualPrice');
+    const onTypeChange = () => {
+        if (orderTypeSel.value === 'market') {
+            priceWrap.hidden = true;
+            marketChip.hidden = false;
+            priceInput.removeAttribute('aria-required');
+        } else {
+            priceWrap.hidden = false;
+            marketChip.hidden = true;
+            priceInput.setAttribute('aria-required', 'true');
+        }
+    };
+    orderTypeSel.addEventListener('change', onTypeChange);
+    onTypeChange();
 }
 
 function applyManualInput() {
-    const usdt = parseFloat(document.getElementById('manualQty').value);
-    const price = parseFloat(document.getElementById('manualPrice').value);
+    const qtyInput = document.getElementById('manualQty');
+    const priceInput = document.getElementById('manualPrice');
     const orderType = document.getElementById('orderType').value;
-    
-    if (!usdt) {
-        alert('Введите сумму в USDT');
+
+    const usdt = parseFloat(qtyInput.value);
+    if (!Number.isFinite(usdt) || usdt <= 0) {
+        markFieldError(qtyInput, 'Введи положительное число USDT');
+        qtyInput.focus();
         return;
     }
-    
-    if (orderType === 'limit' && !price) {
-        alert('Введите цену для лимитного ордера');
+    if (usdt < BYBIT_MIN_NOTIONAL_USDT) {
+        markFieldError(qtyInput, `Меньше минимума Bybit ($${BYBIT_MIN_NOTIONAL_USDT}). Биржа отклонит ордер.`);
+        qtyInput.focus();
         return;
     }
-    
+    clearFieldError(qtyInput);
+
+    let price = null;
+    if (orderType === 'limit') {
+        price = parseFloat(priceInput.value);
+        if (!Number.isFinite(price) || price <= 0) {
+            markFieldError(priceInput, 'Введи положительную цену');
+            priceInput.focus();
+            return;
+        }
+
+        const reference = Number.isFinite(currentTrade?.entryPrice) && currentTrade.entryPrice > 0
+            ? currentTrade.entryPrice
+            : null;
+        if (reference) {
+            const deviationPct = Math.abs(price - reference) / reference * 100;
+            if (deviationPct > PRICE_DEVIATION_BLOCK_PCT) {
+                markFieldError(
+                    priceInput,
+                    `Цена $${price} отличается от текущей ($${reference}) на ${deviationPct.toFixed(1)}% — похоже на опечатку. Поправь, пожалуйста.`
+                );
+                priceInput.focus();
+                return;
+            }
+            if (deviationPct > PRICE_DEVIATION_WARN_PCT) {
+                const ok = confirm(
+                    `Цена $${price} отличается от текущей ($${reference}) на ${deviationPct.toFixed(1)}%. Точно ставим?`
+                );
+                if (!ok) return;
+            }
+        }
+        clearFieldError(priceInput);
+    }
+
     currentTrade.usdtAmount = usdt;
     currentTrade.orderType = orderType;
     currentTrade.entryPrice = orderType === 'market' ? null : price;
-    
+
     document.getElementById('positionInfo').textContent = '$' + usdt.toFixed(2);
     document.getElementById('priceInfo').textContent = price ? '$' + price.toLocaleString() : 'Рыночная';
-    
+
     hideAllInputs();
+}
+
+function markFieldError(input, message) {
+    if (!input) return;
+    input.setAttribute('aria-invalid', 'true');
+    input.classList.add('input-error');
+    const wrap = input.closest('.manual-input');
+    if (wrap) {
+        let msg = wrap.querySelector('.input-error-msg');
+        if (!msg) {
+            msg = document.createElement('small');
+            msg.className = 'input-error-msg';
+            msg.setAttribute('role', 'alert');
+            wrap.appendChild(msg);
+        }
+        msg.textContent = message;
+    }
+}
+
+function clearFieldError(input) {
+    if (!input) return;
+    input.removeAttribute('aria-invalid');
+    input.classList.remove('input-error');
+    const wrap = input.closest('.manual-input');
+    if (wrap) {
+        const msg = wrap.querySelector('.input-error-msg');
+        if (msg) msg.remove();
+    }
 }
 
 // Compute an order size in USDT that:

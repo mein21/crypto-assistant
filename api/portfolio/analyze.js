@@ -253,10 +253,21 @@ module.exports = async (req, res) => {
                 return formatIndicatorLine(coin, bundle, livePrice);
             }).join('\n') || 'нет данных';
 
+        // Free margin Bybit actually checks at /v5/order/create — UTA-level
+        // `totalAvailableBalance` (USD across all enabled-for-trade coins).
+        // Per-USDT `availableToWithdraw` is restrictive (off-exchange-withdrawal
+        // only) and is often 0 on UTA even when the account has plenty for new
+        // orders, but we keep it as a defensive max() for older Classic accounts
+        // that don't populate the UTA-level field.
+        const freeMargin = Math.max(
+            accountSummary.totalAvailableBalance || 0,
+            accountSummary.available || 0
+        );
+
         const prompt = `Ты профессиональный криптотрейдер. Проанализируй мой портфель на основе нескольких индикаторов и текущих цен. Отвечай ТОЛЬКО на русском языке.
 
 Активный баланс (live equity всего UTA-аккаунта = USDT-кеш + все спот-холдинги по mark + нереал. PnL открытых позиций): $${activeBalance.toFixed(2)}
-USDT walletBalance: $${rawBalance.toFixed(2)} (доступно к выводу: $${(accountSummary.available || 0).toFixed(2)}, нереал. PnL по USDT: ${(accountSummary.unrealisedPnl || 0) >= 0 ? '+' : ''}$${(accountSummary.unrealisedPnl || 0).toFixed(2)})
+USDT walletBalance: $${rawBalance.toFixed(2)} (свободно под новый ордер: $${freeMargin.toFixed(2)}, нереал. PnL по USDT: ${(accountSummary.unrealisedPnl || 0) >= 0 ? '+' : ''}$${(accountSummary.unrealisedPnl || 0).toFixed(2)})
 Спот-холдинги (без USDT, по mark-price): $${spotValue.toFixed(2)}
 Открытая фьючерсная экспозиция (notional): $${futuresNotional.toFixed(2)}, нереал. PnL: ${futuresUnrealised >= 0 ? '+' : ''}$${futuresUnrealised.toFixed(2)}
 
@@ -289,15 +300,6 @@ ${futuresLines}
         const aiContent = await callOpenRouter(prompt, apiKey);
         console.log(`[portfolio/analyze] openrouter in ${Date.now() - t2}ms`);
 
-        // Free margin for placing new orders on Bybit V5 UTA. Per-USDT
-        // `availableToWithdraw` is often 0 even when the account has plenty
-        // free, because that field is restricted to off-exchange withdrawal.
-        // The account-level `totalAvailableBalance` (USD) is what Bybit
-        // actually checks when you place a new order, so we surface the max.
-        const freeMargin = Math.max(
-            accountSummary.available || 0,
-            accountSummary.totalAvailableBalance || 0
-        );
         const balance = {
             activeBalance,                              // что показываем в UI как "Активный баланс"
             wallet: rawBalance,                         // USDT walletBalance
