@@ -974,8 +974,15 @@ async function executeTrade() {
                 const fd = await fr.json();
                 if (fd && fd.success) {
                     const live = planOrderUsdt(fd);
+                    if (live.equity <= 0) {
+                        statusValueEl.textContent = '❌ Bybit вернул нулевой баланс. Проверь, что прокси подключён к нужному счёту.';
+                        statusValueEl.className = 'status-value error';
+                        btn.disabled = false;
+                        btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg> Выставить';
+                        return;
+                    }
                     if (live.usdtAmount <= 0) {
-                        statusValueEl.textContent = '❌ Свободного USDT-баланса нет (Bybit available=$' + (live.available || 0).toFixed(2) + ')';
+                        statusValueEl.textContent = `❌ Свободного маржинального баланса нет (free margin $${live.available.toFixed(2)})`;
                         statusValueEl.className = 'status-value error';
                         btn.disabled = false;
                         btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg> Выставить';
@@ -1067,31 +1074,30 @@ function showManualInput() {
         : null;
 
     const wrap = document.createElement('div');
-    wrap.className = 'manual-input-wrap';
+    wrap.className = 'manual-input-wrap manual-compact';
     wrap.innerHTML = `
-        <div class="manual-input">
-            <label for="orderType">Тип ордера</label>
-            <select id="orderType" class="order-type-select">
-                <option value="limit">Лимитный</option>
-                <option value="market">Рыночный</option>
-            </select>
+        <div class="seg-toggle" id="orderTypeToggle" role="tablist" aria-label="Тип ордера">
+            <button type="button" class="seg-btn is-active" data-type="limit" role="tab" aria-selected="true">Лимит</button>
+            <button type="button" class="seg-btn" data-type="market" role="tab" aria-selected="false">Рыночный</button>
         </div>
-        <div class="manual-input">
-            <label for="manualQty">Сумма (USDT) <span class="required" aria-hidden="true">*</span></label>
-            <input type="number" id="manualQty" step="0.01" min="0" inputmode="decimal" aria-required="true" autocomplete="off">
-            <small class="input-hint">
-                Минимум $${BYBIT_MIN_NOTIONAL_USDT} (Bybit notional)${suggestedUsdt ? `. <button type="button" class="input-suggest" data-target="manualQty" data-value="${suggestedUsdt}">Подставить $${suggestedUsdt}</button>` : ''}
-            </small>
-        </div>
-        <div class="manual-input price-input-wrap" id="priceInputWrap">
-            <label for="manualPrice">Лимит-цена (USDT) <span class="required" aria-hidden="true">*</span></label>
-            <input type="number" id="manualPrice" step="0.0001" min="0" inputmode="decimal" aria-required="true" autocomplete="off">
-            <small class="input-hint" id="priceHint">
-                ${suggestedPrice ? `Рекомендация AI: $${suggestedPrice.toLocaleString()}. <button type="button" class="input-suggest" data-target="manualPrice" data-value="${suggestedPrice}">Подставить</button>` : 'Введи лимит-цену в USDT'}
-            </small>
-        </div>
-        <div class="manual-input market-price-chip" id="marketPriceChip" hidden>
-            <span class="chip chip-market">Цена ордера: <strong>рыночная</strong></span>
+        <div class="manual-grid">
+            <div class="manual-input">
+                <label for="manualQty">Сумма USDT <span class="required" aria-hidden="true">*</span></label>
+                <div class="input-with-suggest">
+                    <input type="number" id="manualQty" step="0.01" min="0" inputmode="decimal" aria-required="true" autocomplete="off" placeholder="мин $${BYBIT_MIN_NOTIONAL_USDT}">
+                    ${suggestedUsdt ? `<button type="button" class="input-suggest" data-target="manualQty" data-value="${suggestedUsdt}" title="Подставить рекомендацию AI">$${suggestedUsdt}</button>` : ''}
+                </div>
+            </div>
+            <div class="manual-input price-input-wrap" id="priceInputWrap">
+                <label for="manualPrice">Лимит-цена <span class="required" aria-hidden="true">*</span></label>
+                <div class="input-with-suggest">
+                    <input type="number" id="manualPrice" step="0.0001" min="0" inputmode="decimal" aria-required="true" autocomplete="off" placeholder="USDT">
+                    ${suggestedPrice ? `<button type="button" class="input-suggest" data-target="manualPrice" data-value="${suggestedPrice}" title="Подставить рекомендацию AI">$${suggestedPrice.toLocaleString()}</button>` : ''}
+                </div>
+            </div>
+            <div class="market-price-chip" id="marketPriceChip" hidden>
+                <span class="chip chip-market">Цена ордера: <strong>рыночная</strong></span>
+            </div>
         </div>
         <button class="action-btn ai-btn" id="applyManualBtn" type="button">Применить</button>
     `;
@@ -1110,29 +1116,40 @@ function showManualInput() {
 
     document.getElementById('applyManualBtn').addEventListener('click', applyManualInput);
 
-    const orderTypeSel = document.getElementById('orderType');
+    const toggle = document.getElementById('orderTypeToggle');
     const priceWrap = document.getElementById('priceInputWrap');
     const marketChip = document.getElementById('marketPriceChip');
     const priceInput = document.getElementById('manualPrice');
-    const onTypeChange = () => {
-        if (orderTypeSel.value === 'market') {
+    const setOrderType = (type) => {
+        toggle.querySelectorAll('.seg-btn').forEach(b => {
+            const active = b.dataset.type === type;
+            b.classList.toggle('is-active', active);
+            b.setAttribute('aria-selected', active ? 'true' : 'false');
+        });
+        toggle.dataset.value = type;
+        if (type === 'market') {
             priceWrap.hidden = true;
             marketChip.hidden = false;
             priceInput.removeAttribute('aria-required');
+            clearFieldError(priceInput);
         } else {
             priceWrap.hidden = false;
             marketChip.hidden = true;
             priceInput.setAttribute('aria-required', 'true');
         }
     };
-    orderTypeSel.addEventListener('change', onTypeChange);
-    onTypeChange();
+    toggle.addEventListener('click', (e) => {
+        const btn = e.target.closest('.seg-btn');
+        if (!btn) return;
+        setOrderType(btn.dataset.type);
+    });
+    setOrderType('limit');
 }
 
 function applyManualInput() {
     const qtyInput = document.getElementById('manualQty');
     const priceInput = document.getElementById('manualPrice');
-    const orderType = document.getElementById('orderType').value;
+    const orderType = document.getElementById('orderTypeToggle')?.dataset?.value || 'limit';
 
     const usdt = parseFloat(qtyInput.value);
     if (!Number.isFinite(usdt) || usdt <= 0) {
@@ -1217,13 +1234,6 @@ function clearFieldError(input) {
     }
 }
 
-// Compute an order size in USDT that:
-//   1. aims for ~10% of the user's USDT walletBalance (their "ideal risk slice"),
-//   2. but never exceeds 95% of free margin — the 5% cushion absorbs taker
-//      fees + price slippage between sizing and fill.
-// Without the second cap Bybit rejects the order with `110007 ab not enough`
-// when the account already has open positions consuming most of its margin.
-//
 // "Free margin" on Bybit V5 UTA isn't a single field — we have to look at two:
 //   - `totalAvailableBalance` (account-level USD across all coins, the real
 //     "free balance for placing new orders" on UTA)
@@ -1238,18 +1248,47 @@ function freeMarginFromBalance(d) {
     return Math.max(totalAvail, usdtWithdraw);
 }
 
+// Effective tradeable equity in USD/USDT terms. On UTA cross-margin a user
+// can have $X in BTC/USDC/etc. and 0 USDT in `walletBalance`, yet still place
+// USDT-perpetual orders backed by that cross-coin collateral. Sizing only
+// against USDT walletBalance would set ideal to 0 and block the trade.
+// We therefore prefer the largest equity field reported by Bybit:
+//   - totalEquity         (UTA: USD across all coins, headline number)
+//   - equity              (USDT-only equity incl. unrealised PnL)
+//   - totalWalletBalance  (UTA: USD wallet across all coins, no PnL)
+//   - wallet              (USDT walletBalance, classic accounts)
+function effectiveEquityFromBalance(d) {
+    const totalEquity        = parseFloat(d?.totalEquity) || 0;
+    const usdtEquity         = parseFloat(d?.equity) || 0;
+    const totalWalletBalance = parseFloat(d?.totalWalletBalance) || 0;
+    const wallet             = parseFloat(d?.balance ?? d?.wallet) || 0;
+    return Math.max(totalEquity, usdtEquity, totalWalletBalance, wallet);
+}
+
+// Compute order size in USDT:
+//   1. ideal = 10% of effective equity ("risk slice")
+//   2. capped at FREE_MARGIN_CAP_PCT of free margin so we leave headroom for
+//      taker fees (0.055%×2), slippage between sizing and fill, and minor
+//      collateral movement on UTA cross-margin (BTC/USDC value can shift
+//      between balance read and order placement).
+// 0.95 was too tight in practice — Bybit kept rejecting orders with
+// `110007 ab not enough` when free margin was small (~$30-40), because the
+// 5% cushion didn't cover combined fee + slippage + IM rounding. 0.85 leaves
+// 15% headroom which empirically clears 110007 in the small-account case.
+const FREE_MARGIN_CAP_PCT = 0.85;
 function planOrderUsdt(d) {
-    const wallet    = parseFloat(d?.balance ?? d?.wallet) || 0;
+    const equity    = effectiveEquityFromBalance(d);
     const available = freeMarginFromBalance(d);
-    const ideal = wallet * 0.1;
+    const ideal = equity * 0.1;
     // If the proxy returned neither availability field (older response shapes),
-    // fall back to the wallet-based slice so we don't accidentally size to 0.
-    const cap   = available > 0 ? available * 0.95 : ideal;
+    // fall back to the equity-based slice so we don't accidentally size to 0.
+    const cap   = available > 0 ? available * FREE_MARGIN_CAP_PCT : ideal;
     const usdt  = Math.max(0, Math.min(ideal, cap));
     return {
         usdtAmount: parseFloat(usdt.toFixed(2)),
         wasReduced: usdt + 0.01 < ideal,
         ideal: parseFloat(ideal.toFixed(2)),
+        equity,
         available
     };
 }
@@ -1265,27 +1304,31 @@ async function useAIRecommendation() {
     try {
         const r = await fetch('/api/balance', bybitFetchOptions());
         const d = await r.json();
-        
+
         console.log('Balance response:', d);
-        
-        if (d.balance) {
-            const plan = planOrderUsdt(d);
-            if (plan.usdtAmount <= 0) {
-                alert('Свободного USDT-баланса нет. Закрой какие-нибудь позиции или пополни счёт.');
-                return;
-            }
-            currentTrade.usdtAmount = plan.usdtAmount;
 
-            console.log('Updated trade:', currentTrade, 'plan:', plan);
-
-            const note = plan.wasReduced
-                ? ` (урезано c $${plan.ideal.toFixed(2)} — мало free margin)`
-                : '';
-            document.getElementById('positionInfo').textContent = '$' + plan.usdtAmount.toFixed(2) + note;
-            document.getElementById('priceInfo').textContent = currentTrade.entryPrice ? '$' + currentTrade.entryPrice.toLocaleString() : '--';
-        } else {
-            alert('Не удалось получить баланс');
+        if (!d || !d.success) {
+            alert('Не удалось получить баланс' + (d?.error ? `: ${d.error}` : ''));
+            return;
         }
+        const plan = planOrderUsdt(d);
+        if (plan.equity <= 0) {
+            alert('Bybit вернул нулевой баланс по этому аккаунту. Проверь, что прокси подключён к нужному счёту.');
+            return;
+        }
+        if (plan.usdtAmount <= 0) {
+            alert(`Свободного маржинального баланса нет (free margin $${plan.available.toFixed(2)}). Закрой какие-нибудь позиции или пополни счёт.`);
+            return;
+        }
+        currentTrade.usdtAmount = plan.usdtAmount;
+
+        console.log('Updated trade:', currentTrade, 'plan:', plan);
+
+        const note = plan.wasReduced
+            ? ` (урезано c $${plan.ideal.toFixed(2)} — мало free margin)`
+            : '';
+        document.getElementById('positionInfo').textContent = '$' + plan.usdtAmount.toFixed(2) + note;
+        document.getElementById('priceInfo').textContent = currentTrade.entryPrice ? '$' + currentTrade.entryPrice.toLocaleString() : '--';
     } catch (e) {
         alert('Ошибка получения баланса: ' + e.message);
     }
@@ -1309,40 +1352,46 @@ async function executePairOrder(index) {
     try {
         const r = await fetch('/api/balance', bybitFetchOptions());
         const d = await r.json();
-        
-        if (d.balance) {
-            const plan = planOrderUsdt(d);
-            if (plan.usdtAmount <= 0) {
-                alert(`По ${pair.pair}: свободного USDT-баланса нет. Закрой какие-нибудь позиции или пополни счёт.`);
-                return;
-            }
-            const usdtAmount = plan.usdtAmount;
-            if (plan.wasReduced) {
-                console.log(`[${pair.pair}] sizing reduced from $${plan.ideal} to $${usdtAmount} (free margin $${plan.available.toFixed(2)})`);
-            }
 
-            const qty = parseFloat((usdtAmount / pair.entryPrice).toFixed(4));
-            
-            const r2 = await fetch('/api/execute', bybitFetchOptions({
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    symbol: pair.pair.replace('/', ''),
-                    side: pair.direction === 'LONG' ? 'Buy' : 'Sell',
-                    qty: qty,
-                    price: pair.entryPrice,
-                    tp: pair.tp,
-                    sl: pair.sl
-                })
-            }));
-            const result = await r2.json();
-            
-            if (result.success) {
-                alert(`Ордер ${pair.pair} выставлен!`);
-                loadBalance();
-            } else {
-                alert('Ошибка: ' + (result.error || 'Неизвестная ошибка'));
-            }
+        if (!d || !d.success) {
+            alert(`По ${pair.pair}: не удалось получить баланс` + (d?.error ? `: ${d.error}` : ''));
+            return;
+        }
+        const plan = planOrderUsdt(d);
+        if (plan.equity <= 0) {
+            alert(`По ${pair.pair}: Bybit вернул нулевой баланс по этому аккаунту. Проверь, что прокси подключён к нужному счёту.`);
+            return;
+        }
+        if (plan.usdtAmount <= 0) {
+            alert(`По ${pair.pair}: свободного маржинального баланса нет (free margin $${plan.available.toFixed(2)}). Закрой какие-нибудь позиции или пополни счёт.`);
+            return;
+        }
+        const usdtAmount = plan.usdtAmount;
+        if (plan.wasReduced) {
+            console.log(`[${pair.pair}] sizing reduced from $${plan.ideal} to $${usdtAmount} (free margin $${plan.available.toFixed(2)})`);
+        }
+
+        const qty = parseFloat((usdtAmount / pair.entryPrice).toFixed(4));
+
+        const r2 = await fetch('/api/execute', bybitFetchOptions({
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                symbol: pair.pair.replace('/', ''),
+                side: pair.direction === 'LONG' ? 'Buy' : 'Sell',
+                qty: qty,
+                price: pair.entryPrice,
+                tp: pair.tp,
+                sl: pair.sl
+            })
+        }));
+        const result = await r2.json();
+
+        if (result.success) {
+            alert(`Ордер ${pair.pair} выставлен!`);
+            loadBalance();
+        } else {
+            alert('Ошибка: ' + (result.error || 'Неизвестная ошибка'));
         }
     } catch (e) {
         alert('Ошибка: ' + e.message);

@@ -880,17 +880,18 @@ svg { display: block; }
 .action-btn.ai-btn:hover { box-shadow: 0 8px 20px -8px var(--accent-glow); border-color: var(--accent-purple); }
 .action-btn.manual-btn:hover { box-shadow: 0 8px 20px -8px var(--accent-glow); }
 
-/* Manual input wrap (created dynamically by JS) */
+/* Manual input wrap (created dynamically by JS) — compact stacked layout
+   so the form takes ~3 rows total: [type toggle] [inputs grid] [Apply]. */
 .manual-input-wrap {
     display: flex;
-    flex-wrap: wrap;
+    flex-direction: column;
     gap: 10px;
-    margin-top: 12px;
+    margin-top: 10px;
     width: 100%;
     animation: fade-down 0.35s var(--easing) both;
 }
 .manual-input-wrap input {
-    flex: 1 1 120px;
+    width: 100%;
     min-width: 0;
     background: var(--bg-input);
     border: 1px solid var(--border);
@@ -898,7 +899,7 @@ svg { display: block; }
     color: var(--text-primary);
     font-family: var(--font-mono);
     font-size: 0.9rem;
-    padding: 10px 12px;
+    padding: 8px 10px;
     transition: border-color 0.25s var(--easing), box-shadow 0.25s var(--easing);
 }
 .manual-input-wrap input::placeholder { color: var(--text-muted); }
@@ -907,8 +908,9 @@ svg { display: block; }
     border-color: var(--brand-cyan);
     box-shadow: var(--shadow-glow-cyan);
 }
-.manual-input-wrap button {
-    padding: 10px 18px;
+.manual-input-wrap > button#applyManualBtn {
+    align-self: stretch;
+    padding: 9px 16px;
     background: var(--aurora);
     background-size: 200% 200%;
     color: var(--on-accent);
@@ -919,24 +921,28 @@ svg { display: block; }
     animation: aurora-shift 14s ease-in-out infinite;
     transition: transform 0.2s var(--easing);
 }
-.manual-input-wrap .manual-input button:hover { transform: none; }
-.manual-input-wrap > button { /* the Apply CTA */
-    transform: none;
-}
-.manual-input-wrap > button:hover { transform: translateY(-1px); }
-.manual-input-wrap > button:active { transform: translateY(0) scale(0.97); }
+.manual-input-wrap > button#applyManualBtn:hover { transform: translateY(-1px); }
+.manual-input-wrap > button#applyManualBtn:active { transform: translateY(0) scale(0.97); }
 
-/* Each labeled input column. Wrapping its own label + input + hint vertically
-   so the hint stays below the field rather than overflowing the row. */
+/* Inputs row: 2-column grid on desktop, single column under 540px. */
+.manual-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    align-items: start;
+}
+@media (max-width: 540px) {
+    .manual-grid { grid-template-columns: 1fr; }
+}
+
 .manual-input {
     display: flex;
     flex-direction: column;
     gap: 4px;
-    flex: 1 1 140px;
     min-width: 0;
 }
 .manual-input label {
-    font-size: 0.75rem;
+    font-size: 0.72rem;
     color: var(--text-secondary);
     font-weight: 500;
     text-transform: uppercase;
@@ -945,27 +951,6 @@ svg { display: block; }
 .manual-input label .required {
     color: var(--brand-cyan);
     margin-left: 2px;
-}
-.manual-input .input-hint {
-    font-size: 0.72rem;
-    color: var(--text-muted);
-    line-height: 1.35;
-}
-.manual-input .input-suggest {
-    background: transparent;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    padding: 1px 8px;
-    margin-left: 4px;
-    color: var(--brand-cyan);
-    font-size: 0.7rem;
-    font-family: var(--font-mono);
-    cursor: pointer;
-    transition: border-color 0.2s var(--easing), background 0.2s var(--easing);
-}
-.manual-input .input-suggest:hover {
-    border-color: var(--brand-cyan);
-    background: var(--ink-bg-subtle);
 }
 .manual-input input.input-error {
     border-color: var(--loss);
@@ -977,7 +962,65 @@ svg { display: block; }
     line-height: 1.35;
 }
 .manual-input[hidden] { display: none !important; }
-.market-price-chip { flex: 0 0 auto; align-self: end; }
+
+/* Input + suggest chip on the same row (saves vertical space). */
+.input-with-suggest {
+    display: flex;
+    gap: 4px;
+    align-items: stretch;
+}
+.input-with-suggest input { flex: 1 1 auto; }
+.input-with-suggest .input-suggest {
+    flex: 0 0 auto;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0 10px;
+    color: var(--brand-cyan);
+    font-size: 0.75rem;
+    font-family: var(--font-mono);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: border-color 0.2s var(--easing), background 0.2s var(--easing);
+}
+.input-with-suggest .input-suggest:hover {
+    border-color: var(--brand-cyan);
+    background: var(--ink-bg-subtle);
+}
+
+/* Segmented Limit/Market toggle. */
+.seg-toggle {
+    display: inline-flex;
+    align-self: flex-start;
+    gap: 2px;
+    padding: 3px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+.seg-btn {
+    padding: 6px 14px;
+    background: transparent;
+    color: var(--text-secondary);
+    border: none;
+    border-radius: 6px;
+    font-size: 0.82rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.18s var(--easing), color 0.18s var(--easing);
+}
+.seg-btn:hover { color: var(--text-primary); }
+.seg-btn.is-active {
+    background: var(--brand-cyan);
+    color: var(--on-accent);
+    box-shadow: 0 0 0 1px var(--brand-cyan);
+}
+
+.market-price-chip {
+    display: flex;
+    align-items: end;
+    grid-column: 1 / -1;
+}
 .market-price-chip .chip {
     display: inline-flex;
     align-items: center;
