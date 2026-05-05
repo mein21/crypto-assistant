@@ -28,12 +28,14 @@ function parseAIAnalysis(content) {
     catch (_) { return null; }
 }
 
-// Portfolio review is similar in size to /api/portfolio (~1k output tokens),
-// so default to the same fast 20B model to stay under the 60s Vercel limit.
+// User prefers the smarter 120b for portfolio review too. With Vercel
+// maxDuration=90 in vercel.json there's enough budget for a thoughtful
+// response. OPENROUTER_PORTFOLIO_MODEL still wins if explicitly set.
 const PORTFOLIO_REVIEW_MODEL =
     process.env.OPENROUTER_PORTFOLIO_MODEL ||
-    'openai/gpt-oss-20b:free';
-const OPENROUTER_TIMEOUT_MS = 50_000;
+    process.env.OPENROUTER_MODEL ||
+    'openai/gpt-oss-120b:free';
+const OPENROUTER_TIMEOUT_MS = 80_000;
 
 async function callOpenRouter(prompt, apiKey) {
     const controller = new AbortController();
