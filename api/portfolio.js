@@ -7,30 +7,35 @@
 const { fetchPrices, fetchCandles } = require('./_marketData');
 const { buildIndicatorBundle, formatIndicatorLine } = require('../utils/indicatorBundle');
 const { fetchLatestNews, formatNewsBlock, formatUpcomingHints } = require('./_news');
+const { enforceMinRR, DEFAULT_MIN_RR } = require('./_rrGuard');
 
 // Default symbol set when the client doesn't pass one. Must be a subset of
 // the backend's supported pairs (see PRICE_DECIMALS in api/_bybit.js).
+// Pairs priced in 4+ decimals (ADA/DOGE/MATIC) are intentionally dropped:
+// their tick size is small enough that the free model frequently produces
+// TP/SL pairs whose RR rounds to ~0 — guaranteed loss after fees.
 const DEFAULT_SYMBOLS = [
     'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT',
-    'ADAUSDT', 'DOGEUSDT', 'DOTUSDT', 'AVAXUSDT'
+    'DOTUSDT', 'AVAXUSDT', 'LTCUSDT', 'LINKUSDT'
 ];
 const SUPPORTED_SYMBOLS = new Set([
     'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT',
-    'ADAUSDT', 'DOGEUSDT', 'DOTUSDT', 'AVAXUSDT',
-    'LTCUSDT', 'LINKUSDT', 'MATICUSDT'
+    'DOTUSDT', 'AVAXUSDT', 'LTCUSDT', 'LINKUSDT'
 ]);
-// /api/portfolio asks for FIVE trades, so it generates ~5x the output tokens
-// of /api/analyze. The default `gpt-oss-120b:free` runs at ~21 tok/s on the
-// free provider — that overshoots Vercel's 60s function timeout reliably.
-// Use the smaller-but-much-faster sibling (gpt-oss-20b:free, 21B params, MoE)
-// unless the operator explicitly sets OPENROUTER_PORTFOLIO_MODEL.
+// User explicitly prefers the smarter `openai/gpt-oss-120b:free` over the
+// faster 20b sibling — they're OK with /api/portfolio taking up to ~80s for
+// better trade quality. The Vercel function `maxDuration` was bumped to 90s
+// in vercel.json to match. OPENROUTER_PORTFOLIO_MODEL is honoured if set so
+// the operator can still pin a different model without touching code.
 const OPENROUTER_MODEL =
     process.env.OPENROUTER_PORTFOLIO_MODEL ||
-    'openai/gpt-oss-20b:free';
+    process.env.OPENROUTER_MODEL ||
+    'openai/gpt-oss-120b:free';
 // Hard ceiling on the OpenRouter call. Anything slower returns a clean
-// error to the client instead of hanging until Vercel kills the function
-// with a 504 FUNCTION_INVOCATION_TIMEOUT.
-const OPENROUTER_TIMEOUT_MS = 50_000;
+// error to the client instead of hanging until Vercel kills the function.
+// Sized just under Vercel's 90s maxDuration to leave room for response
+// parsing + JSON encoding + indicator/news prep done before the call.
+const OPENROUTER_TIMEOUT_MS = 80_000;
 
 // Read POST body — Vercel/Node populates `req.body` for JSON requests, but
 // some adapters (Cloudflare Pages, custom Express) leave it as a stream, so
@@ -118,10 +123,18 @@ ${newsSection}
 3) Если |балл|<2 → direction="HET", reason="смешанные сигналы". Не угадывай.
 4) Негатив в новостях (взлом/SEC) → снижай confidence или HET. Позитив (ETF) → +confidence на LONG.
 
-JSON-массив из 5:
-[{"pair":"BTCUSDT","direction":"LONG|SHORT|HET","entryPrice":N,"tp":N,"sl":N,"confidence":1-10,"reason":"кратко: балл, индикаторы, новости"}]
+CONFIDENCE — НЕ ставь 5 всем подряд. Считай по формуле от |балла|:
+|балл|=0→4, |балл|=1→5, |балл|=2→6, |балл|=3→7, |балл|=4→8, |балл|=5→9, |балл|=6→10.
+±1 за сильный новостной фон по этой паре.
 
-LONG: TP>entry, SL<entry. SHORT: TP<entry, SL>entry. TP минимум на 0.2% от entry (комиссия Bybit round-trip 0.11%). HET: entry/tp/sl можно null.
+REASON — строго на русском языке. Никаких английских слов («bullish», «hist positive», «trend up» и т.п.) — пиши «бычий», «гистограмма растёт», «восходящий тренд». Допустимы только аббревиатуры индикаторов (EMA, MACD, RSI, Stoch, Bollinger, %B, %K, ATR, S/R) и тикеры пар.
+
+JSON-массив из 5:
+[{"pair":"BTCUSDT","direction":"LONG|SHORT|HET","entryPrice":N,"tp":N,"sl":N,"confidence":1-10,"reason":"кратко по-русски: балл, индикаторы, новости"}]
+
+LONG: TP>entry, SL<entry. SHORT: TP<entry, SL>entry. HET: entry/tp/sl можно null.
+RR (reward/risk) ≥ ${DEFAULT_MIN_RR}: для LONG (tp-entry)/(entry-sl) ≥ ${DEFAULT_MIN_RR}; для SHORT (entry-tp)/(sl-entry) ≥ ${DEFAULT_MIN_RR}. RR ниже — это HET, никогда не возвращай LONG/SHORT с RR<${DEFAULT_MIN_RR}.
+TP минимум на 0.2% от entry (round-trip taker fee Bybit 0.11%).
 Только JSON, без markdown и комментариев.`;
 }
 
@@ -272,7 +285,11 @@ module.exports = async (req, res) => {
 
         const pairs = aiPairs
             .map(normalisePair)
-            .filter(p => p.pair && p.direction);
+            .filter(p => p.pair && p.direction)
+            // Demote LONG/SHORT trades whose RR < TRADING_MIN_RR (default 1.5)
+            // to HET. The free model occasionally puts TP almost on top of
+            // entry — that's a sub-1 RR after fees, i.e. guaranteed loss.
+            .map(p => enforceMinRR(p));
 
         if (pairs.length === 0) {
             return res.status(200).json({
