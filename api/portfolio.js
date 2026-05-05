@@ -6,6 +6,7 @@
 
 const { fetchPrices, fetchCandles } = require('./_marketData');
 const { buildIndicatorBundle, formatIndicatorLine } = require('../utils/indicatorBundle');
+const { fetchLatestNews, formatNewsBlock, formatUpcomingHints } = require('./_news');
 
 // Default symbol set when the client doesn't pass one. Must be a subset of
 // the backend's supported pairs (see PRICE_DECIMALS in api/_bybit.js).
@@ -74,7 +75,7 @@ async function computeIndicators(prices) {
     return Object.fromEntries(results.filter(Boolean));
 }
 
-function buildPrompt(prices, indicators) {
+function buildPrompt(prices, indicators, news) {
     const priceLines = Object.entries(prices)
         .map(([s, p]) => `- ${s}: $${p}`)
         .join('\n');
@@ -83,6 +84,13 @@ function buildPrompt(prices, indicators) {
         .map(([s, b]) => formatIndicatorLine(s, b, prices[s]))
         .join('\n');
 
+    const newsBlock = formatNewsBlock(news, Object.keys(prices));
+    const newsSection = newsBlock
+        ? `\nНовостной фон (последние 24ч, ★ — пара из текущего набора):\n${newsBlock}\n`
+        : '\nНовостной фон: данных нет.\n';
+
+    const upcoming = formatUpcomingHints();
+
     return `Ты профессиональный криптотрейдер. Выбери 5 лучших сделок на основе данных ниже и верни их строго в виде JSON-массива.
 
 Текущие цены:
@@ -90,8 +98,17 @@ ${priceLines}
 
 Технические индикаторы (1h timeframe) — RSI, MACD, EMA20/EMA50, Bollinger Bands (с %B), Stochastic %K/%D, ATR, тренд, поддержка/сопротивление + история последних 8 свечей (close, ΔPрice, RSI, MACD_hist):
 ${indLines}
+${newsSection}
+Предстоящие события: ${upcoming}
 
-Используй комбинацию минимум 3 индикаторов (например, согласование RSI + MACD + EMA-кросс или Bollinger + Stoch + ATR), а не один RSI. Учитывай динамику последних 8 свечей: куда движутся цена и индикаторы (импульс, дивергенции, развороты), а не только мгновенный срез. Кратко обоснуй выбор парой индикаторов с упоминанием тренда последних свечей.
+ПРОЦЕДУРА (выполняй строго и детерминированно):
+1. Для каждой пары посчитай "балл сигнала" по шести каналам (LONG=+1, SHORT=-1, нейтр=0): EMA-кросс, MACD-гистограмма, RSI (>55 LONG/<45 SHORT), Stochastic %K, Bollinger %B (>0.7 SHORT bias / <0.3 LONG bias), тренд + динамика последних 8 свечей.
+2. Сортируй пары по |баллу| убыванию. Бери первые 5.
+3. Если |балл| у пары < 2 — выставь direction="HET" с reason="смешанные сигналы". НЕ выдумывай LONG/SHORT там, где сигналы конфликтуют.
+4. Учитывай новостной фон: негатив (взлом, иск SEC) — снижай confidence или HET; позитив (одобрение ETF) — повышай confidence на LONG.
+5. При одинаковых данных давай одинаковый ответ — не "перебирай" пары случайно.
+
+ВАЖНО: запрещено возвращать LONG, если 3+ голосов SHORT, и наоборот. Сомневаешься — это HET.
 
 Верни строго JSON-массив из 5 элементов, без markdown, без пояснений до или после:
 [
@@ -102,7 +119,7 @@ ${indLines}
     "tp": 13000.00,
     "sl": 12000.00,
     "confidence": 8,
-    "reason": "Краткое обоснование на русском"
+    "reason": "Краткое обоснование на русском (балл сигнала, ключевые индикаторы, новости если повлияли)"
   }
 ]
 
@@ -110,6 +127,7 @@ ${indLines}
 - LONG: TP > entryPrice, SL < entryPrice
 - SHORT: TP < entryPrice, SL > entryPrice
 - TP должен быть как минимум на 0.2% от entryPrice (для LONG: tp >= entryPrice * 1.002; для SHORT: tp <= entryPrice * 0.998). Round-trip taker fee Bybit = 0.11% (0.055% × 2), TP ближе 0.11% от entry — гарантированный убыток после комиссии. 0.2% даёт минимальный профит сверху комиссии.
+- При direction="HET" поля entryPrice/tp/sl можно вернуть null.
 - confidence — целое число от 1 до 10, где 10 — максимальная уверенность.`;
 }
 
@@ -123,7 +141,12 @@ async function callOpenRouter(prompt, apiKey) {
         body: JSON.stringify({
             model: OPENROUTER_MODEL,
             max_tokens: 2500,
-            temperature: 0.2,
+            // temperature 0 + seed for deterministic output: clicking
+            // "5 пар" twice with the same data should return the same set,
+            // not a random reshuffle.
+            temperature: 0,
+            top_p: 1,
+            seed: 42,
             messages: [{ role: 'user', content: prompt }]
         })
     });
@@ -215,9 +238,14 @@ module.exports = async (req, res) => {
         }
 
         const t1 = Date.now();
-        const indicators = await computeIndicators(prices);
-        console.log(`[portfolio] indicators: ${Object.keys(indicators).length} symbols in ${Date.now() - t1}ms`);
-        const prompt = buildPrompt(prices, indicators);
+        // Indicators + news in parallel — slow news API never blocks beyond
+        // the indicator computation budget.
+        const [indicators, news] = await Promise.all([
+            computeIndicators(prices),
+            fetchLatestNews()
+        ]);
+        console.log(`[portfolio] indicators: ${Object.keys(indicators).length} symbols, news: ${news.length} headlines in ${Date.now() - t1}ms`);
+        const prompt = buildPrompt(prices, indicators, news);
 
         const t2 = Date.now();
         const content = await callOpenRouter(prompt, apiKey);
