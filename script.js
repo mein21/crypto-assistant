@@ -952,15 +952,36 @@ async function executeTrade() {
         // backend validation. Cached, so cheap on second click.
         const instrument = isBybitEnabled() ? await getInstrumentInfo(symbol) : null;
 
+        let bumpNotice = null;
         if (currentTrade.usdtAmount && price) {
-            qty = snapQtyToStep(currentTrade.usdtAmount / price, instrument);
+            // chooseTradeQty handles the snap-down crossing the $5 floor:
+            // if 12 DOGE × $0.4 = $4.80 < $5, it tries 13 DOGE = $5.20
+            // and uses that if cap allows. Without explicit cap here we
+            // pass undefined; the live cap re-check below catches anything
+            // beyond (and re-runs chooseTradeQty with the strict cap).
+            const choice = chooseTradeQty(currentTrade.usdtAmount, price, instrument);
+            qty = choice.qty;
+            if (choice.bumped) {
+                console.log(`Qty bumped to next step to satisfy $5 notional floor: ${qty} (notional $${choice.usdt.toFixed(2)})`);
+                bumpNotice = `Сумма поднята с $${currentTrade.usdtAmount.toFixed(2)} до $${choice.usdt.toFixed(2)} (минимум биржи $5).`;
+                currentTrade.usdtAmount = choice.usdt;
+            }
         } else if (currentTrade.positionSize) {
             qty = snapQtyToStep(currentTrade.positionSize, instrument);
         } else if (currentTrade.orderType === 'market') {
             const usd = currentTrade.usdtAmount || 10;
             // Without a known price for market orders we can't snap to step
             // ahead of time — backend re-snaps on placement using mark price.
-            qty = price ? snapQtyToStep(usd / price, instrument) : parseFloat(usd.toFixed(4));
+            if (price) {
+                const choice = chooseTradeQty(usd, price, instrument);
+                qty = choice.qty;
+                if (choice.bumped) {
+                    console.log(`Market qty bumped to satisfy $5 floor: ${qty} (notional $${choice.usdt.toFixed(2)})`);
+                    currentTrade.usdtAmount = choice.usdt;
+                }
+            } else {
+                qty = parseFloat(usd.toFixed(4));
+            }
         } else {
             alert('Укажите сумму в USDT');
             btn.disabled = false;
@@ -1030,9 +1051,12 @@ async function executeTrade() {
                         return;
                     }
                     if (live.cap + 0.01 < currentTrade.usdtAmount) {
-                        const newQty = snapQtyToStep(live.cap / price, instrument);
-                        console.log(`Sizing reduced just before send: qty ${qty} -> ${newQty} (cap $${live.cap}, free margin $${live.available.toFixed(2)})`);
-                        const reCheck = validateOrderAgainstInstrument(newQty, price, instrument);
+                        // Use chooseTradeQty so reduction-then-snap can still
+                        // satisfy the $5 floor by bumping to next step within
+                        // the cap.
+                        const reChoice = chooseTradeQty(live.cap, price, instrument, live.cap);
+                        console.log(`Sizing reduced just before send: qty ${qty} -> ${reChoice.qty} (cap $${live.cap}, free margin $${live.available.toFixed(2)})`);
+                        const reCheck = validateOrderAgainstInstrument(reChoice.qty, price, instrument);
                         if (reCheck) {
                             statusValueEl.textContent = '❌ ' + reCheck.message + ` (свободно $${live.cap.toFixed(2)})`;
                             statusValueEl.className = 'status-value error';
@@ -1040,8 +1064,8 @@ async function executeTrade() {
                             btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg> Выставить';
                             return;
                         }
-                        qty = newQty;
-                        currentTrade.usdtAmount = live.cap;
+                        qty = reChoice.qty;
+                        currentTrade.usdtAmount = reChoice.usdt;
                     }
                 }
             } catch (_) { /* network blip — fall through and let Bybit decide */ }
@@ -1069,11 +1093,11 @@ const payload = {
         console.log('Response:', d);
         
         if (d.success) {
-            statusValueEl.textContent = '✅ Ордер выставлен';
+            statusValueEl.textContent = '✅ Ордер выставлен' + (bumpNotice ? ` (${bumpNotice})` : '');
             statusValueEl.className = 'status-value success';
             btn.style.display = 'none';
             loadBalance();
-            alert('Ордер успешно выставлен!');
+            alert('Ордер успешно выставлен!' + (bumpNotice ? ` ${bumpNotice}` : ''));
         } else {
             statusValueEl.textContent = '❌ ' + (d.error || 'Ошибка');
             statusValueEl.className = 'status-value error';
@@ -1426,6 +1450,49 @@ function snapQtyToStep(qty, info) {
     return parseFloat(rounded.toFixed(decimals));
 }
 
+// Pick the qty that satisfies Bybit's lotSizeFilter (qtyStep) AND keeps
+// notional ≥ Bybit's $5 floor (or info.minOrderAmt, whichever is stricter).
+// Prefers the largest qty that fits in `usdt` budget; if snap-down drops
+// below the dollar floor, bumps up by one step ONLY if (qty+step)*price
+// stays within `cap` (free-margin ceiling). This is the fix for the
+// "AI sized $5, snapped 12 DOGE → $4.80, Bybit 110094" case where rounding
+// ate the dollar floor — instead of refusing, we use 13 DOGE = $5.20 if
+// the user has the headroom.
+function chooseTradeQty(usdt, price, info, cap) {
+    if (!Number.isFinite(usdt) || usdt <= 0 || !Number.isFinite(price) || price <= 0) {
+        return { qty: 0, usdt: 0, bumped: false };
+    }
+    const minNotional = (info && info.minOrderAmt > 0)
+        ? Math.max(info.minOrderAmt, BYBIT_MIN_NOTIONAL_USDT)
+        : BYBIT_MIN_NOTIONAL_USDT;
+
+    const baseQty = snapQtyToStep(usdt / price, info);
+    const baseNotional = baseQty * price;
+    if (baseNotional >= minNotional) {
+        return { qty: baseQty, usdt: baseNotional, bumped: false };
+    }
+    // Snap-down crossed the dollar floor. Try the next step up — but only
+    // if the increase over the user's intent is small. For e.g. $5 DOGE
+    // snapping 12 → 13 ($4.80 → $5.20) the bump is 4% — fine. For $5 BTC
+    // where the next step is $95 (a 19x jump), silent auto-bump is wrong;
+    // we let validation surface the QTY_BELOW_MIN error instead so the
+    // user can pick a different pair or sum explicitly.
+    const step = info && info.qtyStep > 0 ? info.qtyStep : 0;
+    if (step > 0) {
+        const decimals = _stepDecimals(step);
+        const bumpedQty = parseFloat((baseQty + step).toFixed(decimals));
+        const bumpedNotional = bumpedQty * price;
+        const headroom = Number.isFinite(cap) && cap > 0 ? cap : usdt * 1.5;
+        const maxAcceptableBump = usdt * 1.25; // ≤25% over user's intent
+        if (bumpedNotional <= headroom + 0.01 && bumpedNotional <= maxAcceptableBump + 0.01) {
+            return { qty: bumpedQty, usdt: bumpedNotional, bumped: true };
+        }
+    }
+    // No step info, cap too tight, or bump too aggressive — caller will
+    // surface NOTIONAL_BELOW_MIN / QTY_BELOW_MIN with the actual minimum.
+    return { qty: baseQty, usdt: baseNotional, bumped: false };
+}
+
 // Bybit USDT-perp taker fee is 0.055% per side. A round-trip (entry taker +
 // TP taker, since our TP fires as Market via tpOrderType:'Market') costs
 // ~0.11% of notional. If the AI proposes a TP closer to entry than that,
@@ -1460,26 +1527,40 @@ function validateTpAgainstFees(entry, tp, direction) {
 // "your $6 won't fit BTC's 0.001 step" check so we never call /api/execute
 // for orders Bybit's lotSizeFilter would reject anyway.
 function validateOrderAgainstInstrument(qty, price, info) {
-    if (!info) return null; // best-effort; backend will still validate
+    // Bybit's universal USDT-perp minimum is $5 notional (retCode 110094 if
+    // violated). When per-symbol info is available, info.minOrderAmt may be
+    // higher — we always use the stricter of the two. When info is unavailable
+    // (proxy didn't whitelist /v5/market/instruments-info, network blip, etc.),
+    // we still enforce the $5 floor so the order can't sneak past validation
+    // and round-trip Bybit for a 110094.
+    const minNotionalAmt = (info && info.minOrderAmt > 0)
+        ? Math.max(info.minOrderAmt, BYBIT_MIN_NOTIONAL_USDT)
+        : BYBIT_MIN_NOTIONAL_USDT;
+    const symbolLabel = info?.symbol || 'USDT-perp';
+
     // Treat qty<=0 the same as qty<minOrderQty when we know the instrument:
     // both happen because the user's USDT divided by price snapped below the
     // contract's qtyStep. The actionable info is the same — show the actual
     // minimum lot and dollar floor instead of a vague "Количество получилось 0".
-    if (qty <= 0 || (info.minOrderQty > 0 && qty < info.minOrderQty)) {
+    if (info && (qty <= 0 || (info.minOrderQty > 0 && qty < info.minOrderQty))) {
         const minNotional = price && price > 0
-            ? Math.max(info.minOrderQty * price, info.minOrderAmt)
-            : info.minOrderAmt;
+            ? Math.max(info.minOrderQty * price, minNotionalAmt)
+            : minNotionalAmt;
         return {
             code: 'QTY_BELOW_MIN',
             message: `Минимум для ${info.symbol} — ${info.minOrderQty} (≈$${minNotional.toFixed(2)}). Открой пару подешевле (например, DOGEUSDT/ADAUSDT) или увеличь сумму.`
         };
     }
+    // Hard-floor notional check runs even when info is missing — Bybit's
+    // universal $5 minimum applies to every USDT-perp contract regardless.
+    // This is the check that catches the user's $5 → 12 DOGE × $0.4 = $4.80
+    // case where snap-down rounding ate into the dollar floor.
     if (price && price > 0) {
         const notional = qty * price;
-        if (notional < info.minOrderAmt) {
+        if (notional < minNotionalAmt) {
             return {
                 code: 'NOTIONAL_BELOW_MIN',
-                message: `Сумма ордера $${notional.toFixed(2)} меньше минимума ${info.symbol} ($${info.minOrderAmt}).`
+                message: `Ноционал ордера $${notional.toFixed(2)} меньше минимума ${symbolLabel} ($${minNotionalAmt}). После округления qty вниз до шага лота сумма получилась меньше биржевого минимума — увеличь USDT.`
             };
         }
     }
@@ -1589,7 +1670,13 @@ async function executePairOrder(index) {
 
         const symbol = pair.pair.replace('/', '');
         const instrument = await getInstrumentInfo(symbol);
-        const qty = snapQtyToStep(usdtAmount / pair.entryPrice, instrument);
+        // chooseTradeQty handles snap-down crossing the $5 floor by bumping
+        // to next step within plan.cap (free-margin headroom).
+        const choice = chooseTradeQty(usdtAmount, pair.entryPrice, instrument, plan.cap);
+        const qty = choice.qty;
+        if (choice.bumped) {
+            console.log(`[${pair.pair}] qty bumped to satisfy $5 floor: ${qty} (notional $${choice.usdt.toFixed(2)})`);
+        }
         const preflight = validateOrderAgainstInstrument(qty, pair.entryPrice, instrument);
         if (preflight) {
             alert(`По ${pair.pair}: ${preflight.message}`);
