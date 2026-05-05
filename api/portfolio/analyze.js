@@ -28,25 +28,45 @@ function parseAIAnalysis(content) {
     catch (_) { return null; }
 }
 
+// Portfolio review is similar in size to /api/portfolio (~1k output tokens),
+// so default to the same fast 20B model to stay under the 60s Vercel limit.
+const PORTFOLIO_REVIEW_MODEL =
+    process.env.OPENROUTER_PORTFOLIO_MODEL ||
+    'openai/gpt-oss-20b:free';
+const OPENROUTER_TIMEOUT_MS = 50_000;
+
 async function callOpenRouter(prompt, apiKey) {
-    const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-            'Authorization': `Bearer ${apiKey}`,
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-            model: process.env.OPENROUTER_MODEL || 'openai/gpt-oss-120b:free',
-            max_tokens: 1200,
-            // temperature 0 + seed → reproducible portfolio review for the
-            // same wallet snapshot (was 0.2; user complained about the AI
-            // changing its mind between identical calls).
-            temperature: 0,
-            top_p: 1,
-            seed: 42,
-            messages: [{ role: 'user', content: prompt }]
-        })
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), OPENROUTER_TIMEOUT_MS);
+    let r;
+    try {
+        r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            signal: controller.signal,
+            headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: PORTFOLIO_REVIEW_MODEL,
+                max_tokens: 1200,
+                // temperature 0 + seed → reproducible portfolio review for
+                // the same wallet snapshot (was 0.2; user complained about
+                // the AI changing its mind between identical calls).
+                temperature: 0,
+                top_p: 1,
+                seed: 42,
+                messages: [{ role: 'user', content: prompt }]
+            })
+        });
+    } catch (e) {
+        clearTimeout(timer);
+        if (e.name === 'AbortError') {
+            throw new Error(`OpenRouter не ответил за ${OPENROUTER_TIMEOUT_MS / 1000}с (модель ${PORTFOLIO_REVIEW_MODEL}). Попробуй ещё раз или укажи более быструю модель в переменной OPENROUTER_PORTFOLIO_MODEL.`);
+        }
+        throw e;
+    }
+    clearTimeout(timer);
     if (!r.ok) {
         const text = await r.text().catch(() => '');
         throw new Error(`OpenRouter HTTP ${r.status}: ${text.slice(0, 200)}`);
