@@ -33,23 +33,54 @@ node launch.mjs
 
 Окно с туннелем не закрывай. Закрыл — баланс отвалится. Перезапустишь — URL поменяется (нужно вставить новый).
 
-## Фоновый режим (можно закрывать терминал)
+## Автостарт при включении компьютера (Linux · systemd)
+
+Чтобы launcher сам поднимался после перезагрузки и тебе не нужно было открывать терминал:
+
+```bash
+cd proxy
+npm install              # первый раз
+node launch.mjs --install-service
+```
+
+Это:
+1. Спросит BYBIT_API_KEY/SECRET (если их ещё нет в `.env`).
+2. Запишет systemd unit-файл в `~/.config/systemd/user/crypto-assistant-proxy.service`.
+3. Сделает `systemctl --user daemon-reload && systemctl --user enable --now crypto-assistant-proxy`.
+
+После этого лаунчер живёт в фоне и стартует при логине. Чтобы он переживал и logout (включить «linger»), один раз сделай:
+
+```bash
+sudo loginctl enable-linger "$USER"
+```
+
+Полезные команды:
+
+```bash
+cat proxy/tunnel-url.txt                      # свежий публичный URL
+systemctl --user status crypto-assistant-proxy
+systemctl --user restart crypto-assistant-proxy   # перезапуск (новый URL!)
+tail -f proxy/launcher.log                    # лог
+node launch.mjs --uninstall-service           # снять юнит
+```
+
+## Фоновый режим без systemd (можно закрывать терминал, но не переживает ребут)
 
 После первого запуска ключи сохраняются в `proxy/.env`, и launcher уже не задаёт вопросов. Поэтому его можно поднять в фоне через `nohup`:
 
 ```bash
 cd proxy
 nohup node launch.mjs > launcher.log 2>&1 &
+cat tunnel-url.txt        # выйдет через ~10с
 ```
 
-После этого можно спокойно закрывать терминал — Cloudflare-туннель и Express-прокси переживут logout сессии. Публичный URL ищи:
-
-```bash
-cat proxy/tunnel-url.txt   # последний выданный URL
-tail -f proxy/launcher.log # полный лог
-```
+После этого можно закрывать терминал — Cloudflare-туннель и Express-прокси переживут logout. Но после ребута нужно будет запускать вручную опять.
 
 Если запустить через `nohup`, не имея ключей в `proxy/.env`, launcher не повиснет в темноте — он сразу выйдет с подсказкой запустить один раз вручную.
+
+## Почему `--protocol http2`
+
+Cloudflare quick-tunnel по умолчанию пытается ходить по QUIC (UDP 7844). На многих сетях (домашние роутеры, корп-Wi-Fi, отельный, антивирусы) UDP режется — туннель всё-таки регистрируется, но через пару секунд origin отваливается, и Vercel/UI получает HTTP 530 «origin has been unregistered from Argo Tunnel». Поэтому launcher сразу запускает cloudflared с `--protocol http2` (TCP 443) — это работает везде, где вообще работает HTTPS-трафик.
 
 ## Где взять Bybit-ключ и секрет
 
@@ -57,8 +88,9 @@ https://www.bybit.com → Account → API → API Management → создай к
 
 ## Остановить прокси
 
-- В интерактивном режиме: `Ctrl+C` в окне с запущенным `node launch.mjs`.
-- В фоновом (`nohup`) режиме: `pkill -f 'node .*launch.mjs'` (заодно завершит и порождённый `server.js` — `launch.mjs` сам убирает за собой по SIGTERM).
+- Интерактивный режим: `Ctrl+C` в окне с запущенным `node launch.mjs`.
+- `nohup`/`&`: `pkill -f 'node .*launch.mjs'` (заодно завершит `server.js` и `cloudflared` — лаунчер убирает за собой по SIGTERM).
+- systemd: `systemctl --user stop crypto-assistant-proxy` или полностью снять через `node launch.mjs --uninstall-service`.
 
 ## Альтернативные сценарии (для будущего)
 

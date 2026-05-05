@@ -35,7 +35,7 @@
                     <input type="url" id="bybitWorkerUrl" class="bybit-config-input" placeholder="https://abc-def.trycloudflare.com" autocomplete="off" spellcheck="false">
                 </label>
                 <span class="bybit-config-status" id="bybitConfigStatus"></span>
-                <span class="bybit-config-hint">Запусти у себя в папке репо: первый раз <code>cd proxy &amp;&amp; npm install &amp;&amp; node launch.mjs</code> (введи Bybit-ключи, они сохранятся в <code>proxy/.env</code>), затем фоном <code>nohup node launch.mjs &gt; launcher.log 2>&amp;1 &amp;</code> — терминал можно закрывать. URL ищи в <code>proxy/tunnel-url.txt</code> и вставляй сюда. Подробнее в <code>proxy/README.md</code>.</span>
+                <span class="bybit-config-hint">Один раз: <code>cd proxy &amp;&amp; npm install &amp;&amp; node launch.mjs --install-service</code> (Linux + systemd) — введёшь Bybit-ключи, и launcher станет systemd-юнитом. После этого он сам стартует при включении компа, а свежий публичный URL всегда лежит в <code>proxy/tunnel-url.txt</code> — копируй сюда. Без auto-start: <code>cd proxy &amp;&amp; npm install &amp;&amp; nohup node launch.mjs &gt; launcher.log 2>&amp;1 &amp;</code>. Подробнее в <code>proxy/README.md</code>.</span>
             </div>
 
             <div class="button-grid">
