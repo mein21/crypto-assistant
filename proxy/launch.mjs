@@ -11,11 +11,11 @@
 //   node launch.mjs --uninstall-service   # снимает unit
 //
 // Behaviour:
-//   1. Loads BYBIT_API_KEY / BYBIT_API_SECRET / WORKER_AUTH_TOKEN from
-//      proxy/.env or process.env. If missing and stdin is a TTY — asks
-//      interactively and persists them to proxy/.env. If missing and stdin
-//      is not a TTY (e.g. nohup / & / detached) — exits with a clear hint
-//      so the launcher does not silently hang.
+//   1. Loads BYBIT_API_KEY / BYBIT_API_SECRET from proxy/.env or process.env.
+//      If missing and stdin is a TTY — asks interactively and persists them
+//      to proxy/.env. If missing and stdin is not a TTY (e.g. nohup / & /
+//      detached) — exits with a clear hint so the launcher does not
+//      silently hang.
 //   2. Auto-downloads the cloudflared binary on first run.
 //   3. Starts the Express server on localhost:8080 (proxy/server.js).
 //   4. Spawns cloudflared с --protocol http2 (а не QUIC) — на сетях, где
@@ -38,8 +38,6 @@ const URL_FILE = resolve(HERE, "tunnel-url.txt");
 const LAUNCH_FILE = resolve(HERE, "launch.mjs");
 const LOG_FILE = resolve(HERE, "launcher.log");
 const PORT = 8080;
-const DEFAULT_WORKER_AUTH_TOKEN =
-  "2dca78d44cf3e74559d5ac4c0aa4b8e90e5f4aa0d900a2ad0f16a23a78f4ef74";
 
 const SERVICE_NAME = "crypto-assistant-proxy";
 const SERVICE_UNIT_DIR = resolve(homedir(), ".config/systemd/user");
@@ -106,21 +104,21 @@ if (!env.BYBIT_API_KEY) {
 if (!env.BYBIT_API_SECRET) {
   env.BYBIT_API_SECRET = await ask("BYBIT_API_SECRET (вставь и Enter): ");
 }
-if (!env.WORKER_AUTH_TOKEN) {
-  env.WORKER_AUTH_TOKEN = DEFAULT_WORKER_AUTH_TOKEN;
-}
 
 if (!env.BYBIT_API_KEY || !env.BYBIT_API_SECRET) {
   console.error("Нужны BYBIT_API_KEY и BYBIT_API_SECRET. Запусти ещё раз и введи их.");
   process.exit(1);
 }
 
+// Note: previously also persisted WORKER_AUTH_TOKEN here. We no longer use
+// Bearer auth between Vercel and the proxy — the cloudflare quick-tunnel URL
+// is itself the obscure secret — so we explicitly DO NOT write the key. Any
+// stale WORKER_AUTH_TOKEN in an existing .env gets dropped on next save.
 saveDotEnv(ENV_FILE, {
   BYBIT_API_KEY: env.BYBIT_API_KEY,
   BYBIT_API_SECRET: env.BYBIT_API_SECRET,
-  WORKER_AUTH_TOKEN: env.WORKER_AUTH_TOKEN,
 });
-console.log(`Сохранил BYBIT_API_KEY/SECRET и WORKER_AUTH_TOKEN в ${ENV_FILE} (на будущее).`);
+console.log(`Сохранил BYBIT_API_KEY/SECRET в ${ENV_FILE} (на будущее).`);
 
 if (mode === "install") {
   await installSystemdService();
@@ -150,7 +148,10 @@ const server = spawn(process.execPath, [SERVER_FILE], {
     ...process.env,
     BYBIT_API_KEY: env.BYBIT_API_KEY,
     BYBIT_API_SECRET: env.BYBIT_API_SECRET,
-    WORKER_AUTH_TOKEN: env.WORKER_AUTH_TOKEN,
+    // Intentionally NOT forwarding WORKER_AUTH_TOKEN. server.js' Bearer
+    // gate (`if (WORKER_AUTH_TOKEN)`) stays in place as opt-in for users
+    // who manually export the env var, but the default is no-auth.
+    WORKER_AUTH_TOKEN: "",
     PORT: String(PORT),
   },
   stdio: "inherit",

@@ -12,12 +12,10 @@ const balanceWidget = document.getElementById('balanceWidget');
 const bybitToggle = document.getElementById('bybitEnabled');
 const bybitConfig = document.getElementById('bybitConfig');
 const bybitWorkerUrlInput = document.getElementById('bybitWorkerUrl');
-const bybitWorkerTokenInput = document.getElementById('bybitWorkerToken');
 const bybitConfigStatus = document.getElementById('bybitConfigStatus');
 
 const BYBIT_PREF_KEY = 'bybitIntegrationEnabled';
 const BYBIT_WORKER_URL_KEY = 'bybitWorkerUrl';
-const BYBIT_WORKER_TOKEN_KEY = 'bybitWorkerToken';
 
 function isBybitEnabled() {
     return localStorage.getItem(BYBIT_PREF_KEY) === '1';
@@ -30,21 +28,10 @@ function getBybitWorkerUrl() {
         return u.protocol === 'https:' ? u.origin : '';
     } catch (_) { return ''; }
 }
-function getBybitWorkerToken() {
-    // Same alphabet/length envelope as the Vercel-side sanitizer (api/_bybit.js).
-    // Anything outside it gets dropped — we'd rather send nothing than a header
-    // value that fetch() can't serialize.
-    const raw = (localStorage.getItem(BYBIT_WORKER_TOKEN_KEY) || '').trim();
-    if (!raw || raw.length > 256) return '';
-    if (!/^[A-Za-z0-9._\-]+$/.test(raw)) return '';
-    return raw;
-}
 function bybitFetchOptions(extra = {}) {
     const url = getBybitWorkerUrl();
-    const token = getBybitWorkerToken();
     const headers = { ...(extra.headers || {}) };
     if (url) headers['X-Worker-Url'] = url;
-    if (token) headers['X-Worker-Token'] = token;
     return { ...extra, headers };
 }
 function setBybitStatus(text, kind) {
@@ -161,29 +148,10 @@ if (bybitWorkerUrlInput) {
         if (e.key === 'Enter') { e.preventDefault(); bybitWorkerUrlInput.blur(); }
     });
 }
-if (bybitWorkerTokenInput) {
-    bybitWorkerTokenInput.value = localStorage.getItem(BYBIT_WORKER_TOKEN_KEY) || '';
-    const saveToken = () => {
-        const raw = bybitWorkerTokenInput.value.trim();
-        // Token alphabet matches the server-side sanitizer in api/_bybit.js.
-        // Reject silently with a status hint so the user can fix it; we still
-        // store the cleaned value so a refresh shows the same state.
-        if (raw && (raw.length > 256 || !/^[A-Za-z0-9._\-]+$/.test(raw))) {
-            setBybitStatus('Токен должен быть из A-Z, a-z, 0-9, точек, дефисов или подчёркиваний.', 'err');
-            return;
-        }
-        localStorage.setItem(BYBIT_WORKER_TOKEN_KEY, raw);
-        bybitWorkerTokenInput.value = raw;
-        // If a URL is already saved, re-ping with the new token in scope so
-        // the user sees confirmation that auth now works (or still doesn't).
-        if (getBybitWorkerUrl()) pingBybitWorker();
-    };
-    bybitWorkerTokenInput.addEventListener('change', saveToken);
-    bybitWorkerTokenInput.addEventListener('blur', saveToken);
-    bybitWorkerTokenInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') { e.preventDefault(); bybitWorkerTokenInput.blur(); }
-    });
-}
+// localStorage cleanup: previous releases stored an optional WORKER_AUTH_TOKEN
+// override here. We no longer ship that UI, so wipe stale values to avoid the
+// browser sending a header that the new proxy doesn't expect.
+try { localStorage.removeItem('bybitWorkerToken'); } catch (_) {}
 const bybitConfigEditBtn = document.getElementById('bybitConfigEdit');
 if (bybitConfigEditBtn) {
     bybitConfigEditBtn.addEventListener('click', () => {
