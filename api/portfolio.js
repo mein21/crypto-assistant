@@ -109,6 +109,7 @@ ${indLines}
 ПРАВИЛА:
 - LONG: TP > entryPrice, SL < entryPrice
 - SHORT: TP < entryPrice, SL > entryPrice
+- TP должен быть как минимум на 0.2% от entryPrice (для LONG: tp >= entryPrice * 1.002; для SHORT: tp <= entryPrice * 0.998). Round-trip taker fee Bybit = 0.11% (0.055% × 2), TP ближе 0.11% от entry — гарантированный убыток после комиссии. 0.2% даёт минимальный профит сверху комиссии.
 - confidence — целое число от 1 до 10, где 10 — максимальная уверенность.`;
 }
 
