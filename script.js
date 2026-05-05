@@ -627,7 +627,37 @@ portfolioAnalyzeBtn.addEventListener('click', async () => {
       return;
     }
     const tbody = document.getElementById('analysisBody');
+    const b = d.balance || null;
+    const fmt = (n) => Number.isFinite(n) ? `$${n.toFixed(2)}` : '--';
+    const sign = (n) => Number.isFinite(n) && n !== 0 ? (n > 0 ? '+' : '') : '';
+    let balanceRow = '';
+    if (b) {
+      // accountSummary.unrealisedPnl and the per-position futuresUnrealised
+      // sum represent the SAME PnL (USDT-margined open positions), just
+      // computed from different Bybit endpoints — never add them together.
+      // Prefer the position-list sum because it matches the per-row PnL we
+      // just rendered in the open-positions table.
+      const livePnl = Number.isFinite(b.futuresUnrealised) && b.futuresUnrealised !== 0
+        ? b.futuresUnrealised
+        : (b.unrealisedPnl || 0);
+      const ts = b.ts ? new Date(b.ts).toLocaleTimeString() : '';
+      balanceRow = `
+        <tr><td><strong>Активный баланс</strong></td>
+            <td>
+              <strong>${fmt(b.activeBalance)}</strong>
+              <small style="opacity:.75">
+                — wallet ${fmt(b.wallet)},
+                доступно ${fmt(b.available)},
+                спот-холдинги ${fmt(b.spotValue)},
+                нереал. PnL ${sign(livePnl)}${fmt(livePnl)}
+                ${b.futuresNotional > 0 ? `, фьюч. notional ${fmt(b.futuresNotional)}` : ''}
+                ${ts ? ` · обн. ${ts}` : ''}
+              </small>
+            </td></tr>
+      `;
+    }
     tbody.innerHTML = `
+      ${balanceRow}
       <tr><td><strong>Общее резюме</strong></td><td>${a.summary || '-'}</td></tr>
       <tr><td><strong>Сильные стороны</strong></td><td>${a.strengths || '-'}</td></tr>
       <tr><td><strong>Слабые стороны</strong></td><td>${a.weaknesses || '-'}</td></tr>

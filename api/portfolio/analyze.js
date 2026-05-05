@@ -7,7 +7,7 @@ const { fetchPrices, fetchCandles } = require('../_marketData');
 const { buildIndicatorBundle, formatIndicatorLine } = require('../../utils/indicatorBundle');
 const { touchChance } = require('../../utils/touchProbability');
 const {
-    getUSDTBalance,
+    getAccountSummary,
     getAllCoins,
     getOpenOrders,
     getOrderHistory,
@@ -68,8 +68,11 @@ module.exports = async (req, res) => {
         const t0 = Date.now();
 
         const opts = getWorkerOverrides(req);
-        const [rawBalance, coins, prices, openOrders, orderHistory, futuresPositions] = await Promise.all([
-            getUSDTBalance(opts).catch(() => 0),
+        const [accountSummary, coins, prices, openOrders, orderHistory, futuresPositions] = await Promise.all([
+            getAccountSummary(opts).catch(() => ({
+                wallet: 0, equity: 0, available: 0, unrealisedPnl: 0,
+                totalEquity: 0, totalAvailableBalance: 0, totalWalletBalance: 0
+            })),
             getAllCoins(opts).catch(() => ({})),
             fetchPrices(SUPPORTED),
             getOpenOrders('linear', opts).catch(() => []),
@@ -79,6 +82,7 @@ module.exports = async (req, res) => {
                 return [];
             })
         ]);
+        const rawBalance = accountSummary.wallet;
         console.log(`[portfolio/analyze] bybit+prices fetched in ${Date.now() - t0}ms`);
 
         const assets = Object.entries(coins)
@@ -202,7 +206,18 @@ module.exports = async (req, res) => {
         const spotValue = spotPositions.reduce((s, p) => s + (p.value || 0), 0);
         const futuresUnrealised = futuresOpenPositions.reduce((s, p) => s + (p.unrealisedPnl || 0), 0);
         const futuresNotional = futuresOpenPositions.reduce((s, p) => s + (p.value || 0), 0);
-        const activeBalance = rawBalance + spotValue + futuresUnrealised;
+
+        // Bybit's UTA "totalEquity" already includes USDT cash + all non-USDT
+        // spot holdings (at mark price) + unrealised PnL of every open
+        // position. That is exactly the live "portfolio value" the user sees
+        // inside the Bybit app. Fall back to our manual sum only if the API
+        // didn't return totalEquity (older account types, cold cache, etc.).
+        const liveEquity = accountSummary.totalEquity > 0
+            ? accountSummary.totalEquity
+            : (accountSummary.equity || 0) + spotValue;
+        const activeBalance = liveEquity > 0
+            ? liveEquity
+            : rawBalance + spotValue + futuresUnrealised;
 
         const spotLines = spotPositions.length
             ? spotPositions.map(p => {
@@ -240,8 +255,9 @@ module.exports = async (req, res) => {
 
         const prompt = `Ты профессиональный криптотрейдер. Проанализируй мой портфель на основе нескольких индикаторов и текущих цен. Отвечай ТОЛЬКО на русском языке.
 
-Активный баланс (USDT + спот-позиции > $1 + нереал. PnL фьючерсов): $${activeBalance.toFixed(2)}
-Свободные USDT: $${rawBalance.toFixed(2)}
+Активный баланс (live equity всего UTA-аккаунта = USDT-кеш + все спот-холдинги по mark + нереал. PnL открытых позиций): $${activeBalance.toFixed(2)}
+USDT walletBalance: $${rawBalance.toFixed(2)} (доступно к выводу: $${(accountSummary.available || 0).toFixed(2)}, нереал. PnL по USDT: ${(accountSummary.unrealisedPnl || 0) >= 0 ? '+' : ''}$${(accountSummary.unrealisedPnl || 0).toFixed(2)})
+Спот-холдинги (без USDT, по mark-price): $${spotValue.toFixed(2)}
 Открытая фьючерсная экспозиция (notional): $${futuresNotional.toFixed(2)}, нереал. PnL: ${futuresUnrealised >= 0 ? '+' : ''}$${futuresUnrealised.toFixed(2)}
 
 Технические индикаторы по моим монетам (1h timeframe) — RSI, MACD, EMA20/EMA50, Bollinger Bands (с %B), Stochastic %K, ATR, тренд, поддержка/сопротивление + история последних 8 свечей (close, ΔPрice, RSI, MACD_hist):
@@ -273,6 +289,20 @@ ${futuresLines}
         const aiContent = await callOpenRouter(prompt, apiKey);
         console.log(`[portfolio/analyze] openrouter in ${Date.now() - t2}ms`);
 
+        const balance = {
+            activeBalance,                              // что показываем в UI как "Активный баланс"
+            wallet: rawBalance,                         // USDT walletBalance
+            available: accountSummary.available || 0,   // USDT availableToWithdraw
+            unrealisedPnl: accountSummary.unrealisedPnl || 0,  // USDT unrealisedPnl (futures)
+            spotValue,                                  // сумма спот-холдингов (без USDT)
+            futuresNotional,                            // notional открытых фьючерсов
+            futuresUnrealised,                          // суммарный PnL фьючерсов
+            totalEquity: accountSummary.totalEquity || 0,
+            totalAvailable: accountSummary.totalAvailableBalance || 0,
+            totalWallet: accountSummary.totalWalletBalance || 0,
+            ts: Date.now()
+        };
+
         const analysis = parseAIAnalysis(aiContent);
         if (!analysis) {
             return res.status(200).json({
@@ -281,7 +311,8 @@ ${futuresLines}
                 raw: aiContent,
                 openPositions,
                 spotPositions,
-                futuresPositions: futuresOpenPositions
+                futuresPositions: futuresOpenPositions,
+                balance
             });
         }
 
@@ -290,7 +321,8 @@ ${futuresLines}
             analysis,
             openPositions,
             spotPositions,
-            futuresPositions: futuresOpenPositions
+            futuresPositions: futuresOpenPositions,
+            balance
         });
     } catch (e) {
         console.error('portfolio/analyze error:', e.message);
