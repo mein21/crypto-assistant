@@ -289,10 +289,20 @@ ${futuresLines}
         const aiContent = await callOpenRouter(prompt, apiKey);
         console.log(`[portfolio/analyze] openrouter in ${Date.now() - t2}ms`);
 
+        // Free margin for placing new orders on Bybit V5 UTA. Per-USDT
+        // `availableToWithdraw` is often 0 even when the account has plenty
+        // free, because that field is restricted to off-exchange withdrawal.
+        // The account-level `totalAvailableBalance` (USD) is what Bybit
+        // actually checks when you place a new order, so we surface the max.
+        const freeMargin = Math.max(
+            accountSummary.available || 0,
+            accountSummary.totalAvailableBalance || 0
+        );
         const balance = {
             activeBalance,                              // что показываем в UI как "Активный баланс"
             wallet: rawBalance,                         // USDT walletBalance
-            available: accountSummary.available || 0,   // USDT availableToWithdraw
+            available: freeMargin,                      // свободно под новый ордер
+            availableToWithdraw: accountSummary.available || 0,  // USDT availableToWithdraw (raw)
             unrealisedPnl: accountSummary.unrealisedPnl || 0,  // USDT unrealisedPnl (futures)
             spotValue,                                  // сумма спот-холдингов (без USDT)
             futuresNotional,                            // notional открытых фьючерсов
