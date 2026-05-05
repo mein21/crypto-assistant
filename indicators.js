@@ -23,28 +23,31 @@ const TechnicalIndicatorService = {
 
     calculateRSI(candles, period = 14) {
         if (candles.length < period + 1) return null;
-        
+
         const closes = candles.map(c => c.close);
         let gains = 0, losses = 0;
-        
+
         for (let i = 1; i <= period; i++) {
             const change = closes[i] - closes[i - 1];
             if (change > 0) gains += change;
             else losses -= change;
         }
-        
+
         let avgGain = gains / period;
         let avgLoss = losses / period;
-        
+
         for (let i = period + 1; i < closes.length; i++) {
             const change = closes[i] - closes[i - 1];
             const gain = change > 0 ? change : 0;
             const loss = change < 0 ? -change : 0;
-            
+
             avgGain = (avgGain * (period - 1) + gain) / period;
             avgLoss = (avgLoss * (period - 1) + loss) / period;
         }
-        
+
+        if (avgGain === 0 && avgLoss === 0) return 50;
+        if (avgLoss === 0) return 100;
+        if (avgGain === 0) return 0;
         const rs = avgGain / avgLoss;
         return 100 - (100 / (1 + rs));
     },
@@ -103,31 +106,43 @@ const TechnicalIndicatorService = {
     calculateBollingerBands(candles, period = 20, stdDev = 2) {
         const closes = candles.map(c => c.close);
         if (closes.length < period) return null;
-        
+
         const sma = closes.slice(-period).reduce((a, b) => a + b) / period;
         const variance = closes.slice(-period).reduce((sum, c) => sum + Math.pow(c - sma, 2), 0) / period;
         const std = Math.sqrt(variance);
-        
+
+        const upper = sma + stdDev * std;
+        const lower = sma - stdDev * std;
         const lastClose = closes[closes.length - 1];
-        return {
-            upper: sma + stdDev * std,
-            middle: sma,
-            lower: sma - stdDev * std,
-            position: (lastClose - sma) / std
-        };
+
+        // %B: 0 at lower band, 1 at upper band, 0.5 at middle. Outside the
+        // bands the value goes <0 / >1, which is meaningful info to the AI.
+        const width = upper - lower;
+        const position = width > 0 ? (lastClose - lower) / width : 0.5;
+
+        return { upper, middle: sma, lower, position };
     },
 
     calculateStochastic(candles, kPeriod = 14, dPeriod = 3) {
-        if (candles.length < kPeriod) return null;
-        
-        const recent = candles.slice(-kPeriod);
-        const highest = Math.max(...recent.map(c => c.high));
-        const lowest = Math.min(...recent.map(c => c.low));
-        const lastClose = recent[recent.length - 1].close;
-        
-        const k = ((lastClose - lowest) / (highest - lowest)) * 100;
-        
-        return { k, d: k };
+        if (candles.length < kPeriod + dPeriod - 1) return null;
+
+        const stochAt = (endIdx) => {
+            const window = candles.slice(endIdx - kPeriod + 1, endIdx + 1);
+            const highest = Math.max(...window.map(c => c.high));
+            const lowest = Math.min(...window.map(c => c.low));
+            const close = window[window.length - 1].close;
+            const range = highest - lowest;
+            return range > 0 ? ((close - lowest) / range) * 100 : 50;
+        };
+
+        const ks = [];
+        for (let i = candles.length - dPeriod; i < candles.length; i++) {
+            ks.push(stochAt(i));
+        }
+        const k = ks[ks.length - 1];
+        const d = ks.reduce((a, b) => a + b, 0) / ks.length;
+
+        return { k, d };
     },
 
     calculateATR(candles, period = 14) {

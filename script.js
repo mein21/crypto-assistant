@@ -430,7 +430,7 @@ portfolioBtn.addEventListener('click', async () => {
                 <td data-label="Вход" class="cell-entry">$${p.entryPrice?.toFixed(2) || '-'}</td>
                 <td data-label="TP" class="cell-tp">${p.tp ? '$' + p.tp.toFixed(2) : '-'}</td>
                 <td data-label="SL" class="cell-sl">${p.sl ? '$' + p.sl.toFixed(2) : '-'}</td>
-                <td data-label="Уверенность" class="cell-conf">${p.confidence}%</td>
+                <td data-label="Уверенность" class="cell-conf">${p.confidence != null ? p.confidence + '/10' : '--/10'}</td>
                 <td data-label="Обоснование" class="cell-reason">${p.reason || '-'}</td>
                 <td class="cell-action">
                     <button class="table-btn" onclick="executePairOrder(${i})">
@@ -592,7 +592,12 @@ portfolioAnalyzeBtn.addEventListener('click', async () => {
     alert('Ошибка запроса: ' + e.message);
   }
 });
-document.addEventListener('keydown', function(e) { if (e.key === 'Enter') runAnalysis(); });
+document.addEventListener('keydown', function(e) {
+    if (e.key !== 'Enter') return;
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+    runAnalysis();
+});
 
 loadBalance();
 
@@ -779,7 +784,15 @@ async function executePairOrder(index) {
         alert('Данные о сделке не найдены');
         return;
     }
-    
+    if (pair.direction !== 'LONG' && pair.direction !== 'SHORT') {
+        alert(`По ${pair.pair} AI не дал направления (${pair.direction || '—'}). Ордер не выставляю.`);
+        return;
+    }
+    if (!pair.entryPrice || pair.entryPrice <= 0) {
+        alert(`По ${pair.pair} нет валидной цены входа.`);
+        return;
+    }
+
     try {
         const r = await fetch('/api/balance', bybitFetchOptions());
         const d = await r.json();

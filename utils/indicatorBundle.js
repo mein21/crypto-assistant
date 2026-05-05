@@ -190,7 +190,8 @@ function formatIndicatorLine(symbol, bundle, priceOverride) {
     }
 
     if (bundle.stoch && Number.isFinite(bundle.stoch.k)) {
-        parts.push(`Stoch %K=${num(bundle.stoch.k, 1)}`);
+        const dPart = Number.isFinite(bundle.stoch.d) ? `/%D=${num(bundle.stoch.d, 1)}` : '';
+        parts.push(`Stoch %K=${num(bundle.stoch.k, 1)}${dPart}`);
     }
 
     if (Number.isFinite(bundle.atrPct)) {
