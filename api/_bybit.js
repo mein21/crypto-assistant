@@ -126,6 +126,39 @@ async function getOpenOrders(category = 'linear', opts = {}) {
     return data.result?.list || [];
 }
 
+// Fetches all open USDT-perpetual (linear) positions for the account.
+// Returns a normalised array — only entries with non-zero size are kept,
+// and the Bybit Buy/Sell side is mapped to LONG/SHORT for downstream use.
+async function getFuturesPositions(opts = {}) {
+    const data = await callBybit(
+        '/v5/position/list',
+        'GET',
+        { category: 'linear', settleCoin: 'USDT' },
+        opts
+    );
+    const list = data.result?.list || [];
+    return list
+        .filter(p => parseFloat(p.size) > 0)
+        .map(p => {
+            const tp = parseFloat(p.takeProfit);
+            const sl = parseFloat(p.stopLoss);
+            const liq = parseFloat(p.liqPrice);
+            return {
+                symbol: p.symbol,
+                side: p.side === 'Sell' ? 'SHORT' : 'LONG',
+                size: parseFloat(p.size) || 0,
+                avgPrice: parseFloat(p.avgPrice) || 0,
+                markPrice: parseFloat(p.markPrice) || 0,
+                positionValue: parseFloat(p.positionValue) || 0,
+                unrealisedPnl: parseFloat(p.unrealisedPnl) || 0,
+                leverage: parseFloat(p.leverage) || 0,
+                takeProfit: Number.isFinite(tp) && tp > 0 ? tp : null,
+                stopLoss: Number.isFinite(sl) && sl > 0 ? sl : null,
+                liqPrice: Number.isFinite(liq) && liq > 0 ? liq : null
+            };
+        });
+}
+
 async function getOrderHistory(category = 'linear', limit = 100, opts = {}) {
     const data = await callBybit('/v5/order/history', 'GET', { category, limit }, opts);
     return data.result?.list || [];
@@ -171,6 +204,7 @@ module.exports = {
     getAllCoins,
     getOpenOrders,
     getOrderHistory,
+    getFuturesPositions,
     cancelOrder,
     placeFuturesOrder,
     getWorkerOverrides,
