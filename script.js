@@ -882,16 +882,19 @@ async function executePairOrder(index) {
     });
 })();
 
-(function setupCursorWeb() {
+(function setupCursorVFX() {
     const canvas = document.getElementById('cursorWeb');
     if (!canvas) return;
 
-    // Skip on touch / small / reduced-motion (CSS already hides it, but bail
-    // early so we don't burn CPU running the loop).
-    const fineCursor = window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+    // Skip on small / reduced-motion. CSS already hides the canvas there;
+    // we still bail early so we don't burn CPU on the RAF loop. We
+    // intentionally do NOT gate on (hover: hover)/(pointer: fine): some
+    // real desktop browsers report those as false (remote-desktop / VM /
+    // certain Linux WMs) and we'd rather show the effect there too.
     const wideEnough = window.matchMedia('(min-width: 720px)').matches;
     const noMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (!fineCursor || !wideEnough || noMotion) return;
+    const isCoarse = window.matchMedia('(pointer: coarse)').matches;
+    if (!wideEnough || noMotion || isCoarse) return;
 
     const ctx = canvas.getContext('2d');
     let dpr = Math.max(1, window.devicePixelRatio || 1);
@@ -910,114 +913,181 @@ async function executePairOrder(index) {
     resize();
     window.addEventListener('resize', resize);
 
-    // Each thread is a small chain of nodes that follows the cursor with damped
-    // velocity + gravity + slight horizontal sway. The first node is anchored
-    // at a small offset from the cursor tip (so threads appear to hang from
-    // BELOW the arrow point rather than from the cursor's hot-spot).
-    const THREAD_COUNT = 7;
-    const NODES_PER_THREAD = 14;
-    const NODE_SPACING = 6;          // ideal spacing between nodes (constraint relaxation target)
-    const GRAVITY = 0.18;
-    const DAMPING = 0.86;
-    const SWAY_AMP = 0.05;
+    // ---- Particle network --------------------------------------------------
+    // A field of slowly-drifting points. Lines are drawn between any two
+    // points (or between a point and the cursor) within LINK_DIST. The cursor
+    // also gently attracts nearby particles so the network "leans" toward it.
+    const PARTICLE_DENSITY = 0.00008;     // particles per px^2 of viewport
+    const MIN_PARTICLES = 60;
+    const MAX_PARTICLES = 140;
+    const LINK_DIST = 140;
+    const CURSOR_LINK_DIST = 200;
+    const CURSOR_PULL = 35;               // soft attraction radius (no force outside)
+    const CURSOR_FORCE = 0.06;
+    const SPEED = 0.22;
 
-    // Anchor offset from cursor (px). Threads fan out slightly horizontally.
-    const anchorOffsets = [];
-    for (let i = 0; i < THREAD_COUNT; i++) {
-        const t = (i - (THREAD_COUNT - 1) / 2) / ((THREAD_COUNT - 1) / 2 || 1); // -1..+1
-        anchorOffsets.push({ dx: t * 9, dy: 12 + Math.abs(t) * 2 });
-    }
-
-    const threads = anchorOffsets.map(() => {
-        const nodes = [];
-        for (let j = 0; j < NODES_PER_THREAD; j++) {
-            nodes.push({ x: -100, y: -100, vx: 0, vy: 0 });
+    function buildParticles() {
+        const n = Math.min(MAX_PARTICLES, Math.max(MIN_PARTICLES, Math.round(W * H * PARTICLE_DENSITY)));
+        const arr = new Array(n);
+        for (let i = 0; i < n; i++) {
+            arr[i] = {
+                x: Math.random() * W,
+                y: Math.random() * H,
+                vx: (Math.random() - 0.5) * SPEED,
+                vy: (Math.random() - 0.5) * SPEED,
+                r: 1 + Math.random() * 1.4,
+                tw: Math.random() * Math.PI * 2, // twinkle phase
+            };
         }
-        return { nodes };
-    });
+        return arr;
+    }
+    let particles = buildParticles();
+    window.addEventListener('resize', () => { particles = buildParticles(); });
 
-    let mx = -200, my = -200;
-    let lastMoveAt = performance.now();
-    let cursorVisible = true;
-
+    let mx = -9999, my = -9999;
+    let cursorActive = false;
+    let lastMoveAt = 0;
     window.addEventListener('mousemove', (e) => {
-        mx = e.clientX;
-        my = e.clientY;
+        mx = e.clientX; my = e.clientY;
+        cursorActive = true;
         lastMoveAt = performance.now();
-        cursorVisible = true;
     });
-    document.addEventListener('mouseleave', () => { cursorVisible = false; });
-    document.addEventListener('mouseenter', () => { cursorVisible = true; });
+    document.addEventListener('mouseleave', () => { cursorActive = false; });
+    document.addEventListener('mouseenter', () => { cursorActive = true; });
+
+    // Cursor "comet" trail — recent positions, fade with age.
+    const trail = [];
+    const TRAIL_MAX = 18;
 
     let phase = 0;
     function tick() {
-        phase += 0.02;
+        phase += 0.016;
+        const now = performance.now();
 
-        // Resolve the current --accent-glow color so threads pick up the
-        // active theme automatically.
+        // Live theme color so VFX rebrand on theme toggle without reload.
         const css = getComputedStyle(document.documentElement);
-        const stroke = (css.getPropertyValue('--accent') || '#fff').trim();
+        const accent = (css.getPropertyValue('--accent') || '#fff').trim();
+        const isDark = (document.documentElement.getAttribute('data-theme') || 'dark') !== 'light';
 
         ctx.clearRect(0, 0, W, H);
 
-        // Idle fade — if the cursor is parked or off-page, gently drop the
-        // threads instead of hard-cutting.
-        const idle = !cursorVisible || (performance.now() - lastMoveAt) > 600;
+        // ---- Cursor spotlight (big soft halo behind everything) -----------
+        if (cursorActive && (now - lastMoveAt) < 4000) {
+            const halo = ctx.createRadialGradient(mx, my, 0, mx, my, 260);
+            // White on dark theme, near-black on light theme — both add a
+            // visible "pool of light" without breaking the B&W palette.
+            const tint = isDark ? 'rgba(255,255,255,' : 'rgba(0,0,0,';
+            halo.addColorStop(0, tint + (isDark ? '0.10' : '0.06') + ')');
+            halo.addColorStop(0.4, tint + (isDark ? '0.04' : '0.02') + ')');
+            halo.addColorStop(1, tint + '0)');
+            ctx.fillStyle = halo;
+            ctx.fillRect(mx - 280, my - 280, 560, 560);
+        }
 
-        for (let i = 0; i < threads.length; i++) {
-            const { nodes } = threads[i];
-            const off = anchorOffsets[i];
-            const ax = mx + off.dx;
-            const ay = my + off.dy;
-
-            // Anchor head on the cursor (or just teleport off-screen if idle).
-            nodes[0].x = ax;
-            nodes[0].y = ay;
-            nodes[0].vx = 0;
-            nodes[0].vy = 0;
-
-            for (let j = 1; j < nodes.length; j++) {
-                const n = nodes[j];
-                n.vy += GRAVITY;
-                // Horizontal sway gets stronger toward the tip.
-                n.vx += Math.sin(phase + i * 0.7 + j * 0.4) * SWAY_AMP * (j / nodes.length);
-                n.vx *= DAMPING;
-                n.vy *= DAMPING;
-                n.x += n.vx;
-                n.y += n.vy;
-
-                // Distance constraint to the previous node.
-                const prev = nodes[j - 1];
-                const dx = n.x - prev.x;
-                const dy = n.y - prev.y;
-                const d = Math.hypot(dx, dy) || 0.001;
-                const diff = (d - NODE_SPACING) / d;
-                n.x -= dx * diff;
-                n.y -= dy * diff;
+        // ---- Update particles ---------------------------------------------
+        for (let i = 0; i < particles.length; i++) {
+            const p = particles[i];
+            // Soft attraction toward cursor when close.
+            if (cursorActive) {
+                const dx = mx - p.x, dy = my - p.y;
+                const d2 = dx * dx + dy * dy;
+                const r = CURSOR_PULL * 4;
+                if (d2 < r * r) {
+                    const d = Math.sqrt(d2) || 0.01;
+                    const f = (1 - d / r) * CURSOR_FORCE;
+                    p.vx += (dx / d) * f;
+                    p.vy += (dy / d) * f;
+                }
             }
+            p.vx *= 0.985; p.vy *= 0.985;
+            p.x += p.vx; p.y += p.vy;
+            p.tw += 0.04;
+            // Wrap around edges so the field is seamless.
+            if (p.x < -10) p.x = W + 10;
+            if (p.x > W + 10) p.x = -10;
+            if (p.y < -10) p.y = H + 10;
+            if (p.y > H + 10) p.y = -10;
+        }
 
-            // Draw the thread.
-            ctx.lineCap = 'round';
-            ctx.strokeStyle = stroke;
-            const alpha = idle ? 0.25 : 0.65;
-            ctx.globalAlpha = alpha;
-            ctx.lineWidth = 0.9;
-
-            ctx.beginPath();
-            ctx.moveTo(nodes[0].x, nodes[0].y);
-            for (let j = 1; j < nodes.length; j++) {
-                ctx.lineTo(nodes[j].x, nodes[j].y);
+        // ---- Lines between nearby particles -------------------------------
+        ctx.lineWidth = 0.7;
+        for (let i = 0; i < particles.length; i++) {
+            const a = particles[i];
+            for (let j = i + 1; j < particles.length; j++) {
+                const b = particles[j];
+                const dx = a.x - b.x, dy = a.y - b.y;
+                const d2 = dx * dx + dy * dy;
+                if (d2 < LINK_DIST * LINK_DIST) {
+                    const t = 1 - Math.sqrt(d2) / LINK_DIST;
+                    ctx.globalAlpha = t * (isDark ? 0.32 : 0.22);
+                    ctx.strokeStyle = accent;
+                    ctx.beginPath();
+                    ctx.moveTo(a.x, a.y);
+                    ctx.lineTo(b.x, b.y);
+                    ctx.stroke();
+                }
             }
-            ctx.stroke();
+        }
 
-            // Tip dot.
-            const tip = nodes[nodes.length - 1];
-            ctx.globalAlpha = alpha * 1.4;
+        // ---- Lines from cursor to nearby particles ------------------------
+        if (cursorActive) {
+            for (let i = 0; i < particles.length; i++) {
+                const p = particles[i];
+                const dx = p.x - mx, dy = p.y - my;
+                const d2 = dx * dx + dy * dy;
+                if (d2 < CURSOR_LINK_DIST * CURSOR_LINK_DIST) {
+                    const t = 1 - Math.sqrt(d2) / CURSOR_LINK_DIST;
+                    ctx.globalAlpha = t * (isDark ? 0.55 : 0.38);
+                    ctx.lineWidth = 0.9;
+                    ctx.strokeStyle = accent;
+                    ctx.beginPath();
+                    ctx.moveTo(mx, my);
+                    ctx.lineTo(p.x, p.y);
+                    ctx.stroke();
+                }
+            }
+        }
+
+        // ---- Particle dots with twinkle -----------------------------------
+        ctx.globalAlpha = 1;
+        for (let i = 0; i < particles.length; i++) {
+            const p = particles[i];
+            const tw = 0.65 + Math.sin(p.tw) * 0.3;
+            ctx.globalAlpha = (isDark ? 0.85 : 0.55) * tw;
+            // Glow halo
+            ctx.shadowColor = accent;
+            ctx.shadowBlur = 8;
+            ctx.fillStyle = accent;
             ctx.beginPath();
-            ctx.arc(tip.x, tip.y, 1.1, 0, Math.PI * 2);
-            ctx.fillStyle = stroke;
+            ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
             ctx.fill();
         }
+        ctx.shadowBlur = 0;
+
+        // ---- Cursor comet trail -------------------------------------------
+        if (cursorActive) {
+            // Push a sample of the current cursor position; throttle by frame.
+            trail.push({ x: mx, y: my });
+            if (trail.length > TRAIL_MAX) trail.shift();
+            for (let i = 1; i < trail.length; i++) {
+                const a = trail[i - 1];
+                const b = trail[i];
+                const t = i / trail.length;
+                ctx.globalAlpha = t * (isDark ? 0.55 : 0.40);
+                ctx.lineWidth = 1 + t * 1.6;
+                ctx.shadowColor = accent;
+                ctx.shadowBlur = 10 * t;
+                ctx.strokeStyle = accent;
+                ctx.beginPath();
+                ctx.moveTo(a.x, a.y);
+                ctx.lineTo(b.x, b.y);
+                ctx.stroke();
+            }
+            ctx.shadowBlur = 0;
+        } else if (trail.length) {
+            trail.length = 0;
+        }
+
         ctx.globalAlpha = 1;
         requestAnimationFrame(tick);
     }

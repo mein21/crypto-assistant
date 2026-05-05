@@ -79,9 +79,10 @@
     --shadow-button: 0 8px 24px -8px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.18);
     --shadow-glow-cyan: 0 0 0 1px rgba(255, 255, 255, 0.5), 0 0 30px rgba(255, 255, 255, 0.18);
 
-    --ambient-blob: rgba(255, 255, 255, 0.06);
-    --ambient-blob-faint: rgba(255, 255, 255, 0.04);
-    --noise-dot: rgba(255, 255, 255, 0.04);
+    --ambient-blob: rgba(255, 255, 255, 0.14);
+    --ambient-blob-faint: rgba(255, 255, 255, 0.08);
+    --noise-dot: rgba(255, 255, 255, 0.05);
+    --halo: rgba(255, 255, 255, 0.45);
 
     /* Surface tints — used for hover backgrounds, zebra rows, chips. */
     --ink-bg-subtle: rgba(255, 255, 255, 0.03);
@@ -147,9 +148,10 @@
     --shadow-button: 0 8px 24px -8px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.6);
     --shadow-glow-cyan: 0 0 0 1px rgba(0, 0, 0, 0.5), 0 0 30px rgba(0, 0, 0, 0.18);
 
-    --ambient-blob: rgba(0, 0, 0, 0.05);
-    --ambient-blob-faint: rgba(0, 0, 0, 0.03);
+    --ambient-blob: rgba(0, 0, 0, 0.10);
+    --ambient-blob-faint: rgba(0, 0, 0, 0.06);
     --noise-dot: rgba(0, 0, 0, 0.04);
+    --halo: rgba(0, 0, 0, 0.30);
 
     --ink-bg-subtle: rgba(0, 0, 0, 0.03);
     --ink-bg-medium: rgba(0, 0, 0, 0.06);
@@ -252,8 +254,9 @@ svg { display: block; }
     background-clip: text;
     color: transparent;
     background-size: 200% 200%;
-    animation: aurora-shift 12s ease-in-out infinite, fade-up 0.8s var(--easing) both;
-    text-shadow: 0 0 40px var(--accent-glow);
+    animation: aurora-shift 12s ease-in-out infinite, fade-up 0.8s var(--easing) both,
+               title-pulse 4.5s ease-in-out infinite;
+    filter: drop-shadow(0 0 18px var(--halo));
     position: relative;
     padding-top: 6px;
 }
@@ -266,8 +269,8 @@ svg { display: block; }
     border-radius: 2px;
     background: var(--aurora);
     background-size: 200% 200%;
-    animation: aurora-shift 12s ease-in-out infinite;
-    box-shadow: 0 0 24px var(--accent-glow);
+    animation: aurora-shift 12s ease-in-out infinite, title-pulse 4.5s ease-in-out infinite;
+    box-shadow: 0 0 28px var(--halo), 0 0 6px var(--accent-glow);
 }
 
 /* -- Card / Glass -------------------------------------------------------- */
@@ -276,11 +279,11 @@ svg { display: block; }
     background: var(--bg-surface);
     backdrop-filter: var(--blur-md) saturate(160%);
     -webkit-backdrop-filter: var(--blur-md) saturate(160%);
-    border: 1px solid var(--border);
+    border: 1px solid var(--border-strong);
     border-radius: var(--radius-xl);
-    box-shadow: var(--shadow-card);
+    box-shadow: var(--shadow-card), 0 0 60px -15px var(--halo);
     overflow: hidden;
-    animation: fade-up 0.85s 0.05s var(--easing) both;
+    animation: fade-up 0.85s 0.05s var(--easing) both, card-breath 7s ease-in-out 1s infinite;
     transition: box-shadow 0.5s var(--easing), border-color 0.5s var(--easing);
 }
 .card::before {
@@ -605,21 +608,24 @@ svg { display: block; }
     background: var(--aurora);
     background-size: 200% 200%;
     border: 1px solid transparent;
-    box-shadow: var(--shadow-button);
+    box-shadow: var(--shadow-button), 0 0 36px -8px var(--halo);
     animation: aurora-shift 16s ease-in-out infinite;
     color: var(--on-accent);
     padding: 18px 24px;
     font-size: 1rem;
+    overflow: hidden;
 }
 .preset.main-action::before {
     content: '';
     position: absolute;
     inset: 0;
-    background: linear-gradient(120deg, transparent 0%, var(--accent-soft) 50%, transparent 100%);
+    background: linear-gradient(120deg, transparent 0%, var(--halo) 45%, var(--halo) 55%, transparent 100%);
     transform: translateX(-100%);
-    transition: transform 0.7s var(--easing);
-    z-index: -1;
+    animation: sheen-sweep 5.5s ease-in-out 2.5s infinite;
+    pointer-events: none;
+    mix-blend-mode: overlay;
 }
+.preset.main-action:hover::before { animation-play-state: paused; }
 .preset.main-action:hover {
     transform: translateY(-2px);
     box-shadow: 0 16px 40px -10px var(--accent-glow), inset 0 1px 0 var(--accent-glow);
@@ -1196,6 +1202,21 @@ svg { display: block; }
     0%, 100% { background-position: 0% 50%; }
     50% { background-position: 100% 50%; }
 }
+@keyframes title-pulse {
+    0%, 100% { filter: drop-shadow(0 0 14px var(--halo)) drop-shadow(0 0 2px var(--accent-glow)); }
+    50%      { filter: drop-shadow(0 0 24px var(--halo)) drop-shadow(0 0 6px var(--accent-glow)); }
+}
+@keyframes sheen-sweep {
+    0%   { transform: translateX(-100%); opacity: 0; }
+    8%   { opacity: 1; }
+    50%  { transform: translateX(100%); opacity: 1; }
+    52%  { transform: translateX(100%); opacity: 0; }
+    100% { transform: translateX(100%); opacity: 0; }
+}
+@keyframes card-breath {
+    0%, 100% { box-shadow: var(--shadow-card), 0 0 50px -15px var(--halo); }
+    50%      { box-shadow: var(--shadow-card), 0 0 80px -15px var(--halo); }
+}
 @keyframes fade-up {
     from { opacity: 0; transform: translateY(14px); }
     to   { opacity: 1; transform: translateY(0); }
@@ -1558,12 +1579,12 @@ svg { display: block; }
     height: 100%;
     pointer-events: none;
     z-index: 9999;
-    display: none;
-    opacity: 0.85;
-    mix-blend-mode: difference; /* threads stay visible on both themes */
+    display: block;
+    opacity: 1;
 }
-@media (hover: hover) and (pointer: fine) and (min-width: 720px) {
-    .cursor-web { display: block; }
+/* Hide on phones / very narrow viewports — JS also bails early there. */
+@media (max-width: 719px) {
+    .cursor-web { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
     .cursor-web { display: none !important; }
