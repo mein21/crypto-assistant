@@ -3,8 +3,8 @@
 // computes indicators for every held coin, asks the AI for a portfolio
 // review, and returns ONLY what the AI produced (no hard-coded fallback).
 
-const { IndicatorService } = require('../../indicators');
 const { fetchPrices, fetchCandles } = require('../_marketData');
+const { buildIndicatorBundle, formatIndicatorLine } = require('../../utils/indicatorBundle');
 const {
     getUSDTBalance,
     getAllCoins,
@@ -90,13 +90,8 @@ module.exports = async (req, res) => {
             const symbol = `${a.coin}USDT`;
             try {
                 const candles = await fetchCandles(symbol, '1h', 100);
-                if (candles.length) {
-                    indicatorsMap[a.coin] = {
-                        rsi: IndicatorService.calculateRSI(candles),
-                        trend: IndicatorService.determineTrend(candles),
-                        sr: IndicatorService.calculateSupportResistance(candles)
-                    };
-                }
+                const bundle = buildIndicatorBundle(candles);
+                if (bundle) indicatorsMap[a.coin] = bundle;
             } catch (e) {
                 console.warn(`[portfolio/analyze] indicators ${symbol} failed:`, e.message);
             }
@@ -167,20 +162,20 @@ module.exports = async (req, res) => {
             : 'Нет открытых позиций';
 
         const indicatorLines = Object.entries(indicatorsMap)
-            .map(([coin, ind]) => {
-                const rsi = Number.isFinite(ind.rsi) ? ind.rsi.toFixed(1) : 'н/д';
-                const trend = ind.trend || 'н/д';
-                const sr = ind.sr ? `S=$${ind.sr.support?.toFixed?.(4) ?? '-'}, R=$${ind.sr.resistance?.toFixed?.(4) ?? '-'}` : '';
-                return `- ${coin}: RSI=${rsi}, тренд=${trend}, ${sr}`;
+            .map(([coin, bundle]) => {
+                const livePrice = prices[`${coin}USDT`];
+                return formatIndicatorLine(coin, bundle, livePrice);
             }).join('\n') || 'нет данных';
 
-        const prompt = `Ты профессиональный криптотрейдер. Проанализируй мой портфель на основе индикаторов и текущих цен. Отвечай ТОЛЬКО на русском языке.
+        const prompt = `Ты профессиональный криптотрейдер. Проанализируй мой портфель на основе нескольких индикаторов и текущих цен. Отвечай ТОЛЬКО на русском языке.
 
 Активный баланс (USDT + позиции > $1): $${activeBalance.toFixed(2)}
 Свободные USDT: $${rawBalance.toFixed(2)}
 
-Технические индикаторы по моим монетам:
+Технические индикаторы по моим монетам (1h timeframe) — RSI, MACD, EMA20/EMA50, Bollinger Bands (с %B), Stochastic %K, ATR, тренд, поддержка/сопротивление:
 ${indicatorLines}
+
+Опирайся на согласование минимум 3 индикаторов (например, RSI + MACD + EMA-кросс, либо Bollinger + Stoch + ATR), а не на один RSI.
 
 Открытые позиции:
 ${positionLines}
