@@ -5,6 +5,7 @@
 
 const { fetchPrices, fetchCandles } = require('./_marketData');
 const { buildIndicatorBundle, formatIndicatorLine } = require('../utils/indicatorBundle');
+const { fetchLatestNews, formatNewsBlock, formatUpcomingHints } = require('./_news');
 
 // Default symbol set when the client doesn't pass one via `?symbols=`.
 const DEFAULT_SYMBOLS = [
@@ -57,7 +58,7 @@ async function computeIndicators(prices) {
     return Object.fromEntries(results.filter(Boolean));
 }
 
-function buildPrompt(prices, indicators) {
+function buildPrompt(prices, indicators, news) {
     const priceLines = Object.entries(prices)
         .map(([s, p]) => `- ${s}: $${p}`)
         .join('\n');
@@ -66,6 +67,13 @@ function buildPrompt(prices, indicators) {
         .map(([s, b]) => formatIndicatorLine(s, b, prices[s]))
         .join('\n');
 
+    const newsBlock = formatNewsBlock(news, Object.keys(prices));
+    const newsSection = newsBlock
+        ? `\nНовостной фон (последние 24ч, ★ — пара из текущего набора):\n${newsBlock}\n`
+        : '\nНовостной фон: данных нет (пропусти этот блок в анализе).\n';
+
+    const upcoming = formatUpcomingHints();
+
     return `Ты профессиональный криптотрейдер. Проанализируй рынок по нескольким индикаторам и дай ОДНУ лучшую рекомендацию строго в виде JSON-объекта.
 
 Текущие цены:
@@ -73,10 +81,25 @@ ${priceLines}
 
 Технические индикаторы (1h timeframe) — RSI, MACD, EMA20/EMA50, Bollinger Bands (с %B), Stochastic %K, ATR, тренд, поддержка/сопротивление + история последних 8 свечей (close, ΔPрice, RSI, MACD_hist):
 ${indLines}
+${newsSection}
+Предстоящие события: ${upcoming}
 
-Используй комбинацию минимум 3 индикаторов (например, согласование RSI + MACD + EMA-кросс или Bollinger + Stoch + ATR), а не один RSI. Учитывай динамику последних 8 свечей: куда движутся цена и индикаторы (импульс, дивергенции, развороты), а не только мгновенный срез. Кратко обоснуй выбор парой индикаторов с упоминанием тренда последних свечей.
+ПРОЦЕДУРА ВЫБОРА НАПРАВЛЕНИЯ (выполняй строго по порядку, не пропускай шаги):
+1. Для каждой пары посчитай "балл сигнала" = сумма голосов (LONG=+1, SHORT=-1, нейтрально=0) по шести каналам:
+   • EMA-кросс (EMA20 vs EMA50);
+   • MACD-гистограмма (знак + динамика последних 3 свечей);
+   • RSI (>55 LONG, <45 SHORT, 45-55 нейтрально; учти разворот в истории);
+   • Stochastic %K (>50 + растёт LONG, <50 + падает SHORT);
+   • Bollinger %B (>0.7 перекуп → SHORT bias, <0.3 перепрод → LONG bias, иначе по тренду);
+   • Тренд + последние 8 свечей (3+ зелёных подряд = LONG, 3+ красных = SHORT).
+2. Выбирай пару с МАКСИМАЛЬНЫМ |баллом|. Если у двух пар |балл| равны — бери ту, где ATR% выше (больше волатильности = больше потенциала).
+3. Если |балл| у лучшей пары < 3 ИЛИ голоса распределены 3/3 (сильный конфликт) — верни direction="HET" с reason="смешанные сигналы, ждём подтверждения" и НЕ выдумывай LONG/SHORT.
+4. Учитывай новостной фон: сильный негатив по монете (взлом, иск SEC, делистинг) — снижай confidence или переключайся на HET. Сильный позитив по макро (одобрение ETF, дешёвые деньги) — повышай confidence на LONG.
+5. Будь ДЕТЕРМИНИСТИЧЕН: при одинаковых данных всегда давай одинаковый ответ. Не "перебирай" пары случайно — следуй процедуре.
 
-Верни JSON со следующими полями:
+ВАЖНО: запрещено возвращать LONG если 3+ голосов SHORT, и наоборот. Если ты не уверен — это HET, а не угадывание.
+
+ОТВЕТ — строго JSON со следующими полями:
 {
   "pair": "BTCUSDT",
   "direction": "LONG" | "SHORT" | "HET",
@@ -84,12 +107,13 @@ ${indLines}
   "tp": 13000.00,
   "sl": 12000.00,
   "confidence": 8,
-  "reason": "Краткое обоснование на русском"
+  "reason": "Краткое обоснование на русском (укажи итоговый балл сигнала, ключевые индикаторы и упомяни новостной фон, если он повлиял)"
 }
 
 ПРАВИЛА TP/SL:
 - LONG: TP > entryPrice, SL < entryPrice
 - SHORT: TP < entryPrice, SL > entryPrice
+- При direction="HET" entryPrice/tp/sl можно вернуть null.
 
 Верни ТОЛЬКО JSON-объект без markdown-обёртки и без любого текста до или после.`;
 }
@@ -104,7 +128,13 @@ async function callOpenRouter(prompt, apiKey) {
         body: JSON.stringify({
             model: OPENROUTER_MODEL,
             max_tokens: 1500,
-            temperature: 0.2,
+            // temperature 0 makes the model deterministic for identical
+            // input. The user complained that hitting "Best trade" twice
+            // could flip BTC from SHORT to LONG with the same data — that
+            // was 0.2 sampling. seed pins it where the model supports it.
+            temperature: 0,
+            top_p: 1,
+            seed: 42,
             messages: [{ role: 'user', content: prompt }]
         })
     });
@@ -173,9 +203,15 @@ module.exports = async (req, res) => {
         }
 
         const t1 = Date.now();
-        const indicators = await computeIndicators(prices);
-        console.log(`[analyze] indicators: ${Object.keys(indicators).length} symbols in ${Date.now() - t1}ms`);
-        const prompt = buildPrompt(prices, indicators);
+        // Fetch indicators and news in parallel — news is non-critical so
+        // we never let a slow news API delay the analysis past its own
+        // computation.
+        const [indicators, news] = await Promise.all([
+            computeIndicators(prices),
+            fetchLatestNews()
+        ]);
+        console.log(`[analyze] indicators: ${Object.keys(indicators).length} symbols, news: ${news.length} headlines in ${Date.now() - t1}ms`);
+        const prompt = buildPrompt(prices, indicators, news);
 
         const t2 = Date.now();
         const content = await callOpenRouter(prompt, apiKey);

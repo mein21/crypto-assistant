@@ -28,6 +28,42 @@ const ALL_PAIRS = [
     'LTCUSDT', 'LINKUSDT', 'MATICUSDT'
 ];
 
+// Mirror of api/_bybit.js PRICE_DECIMALS so the UI can show prices with the
+// same precision the backend uses for orders. Anything not listed falls back
+// to magnitude-based digits via priceDigitsFromMagnitude().
+const PAIR_PRICE_DECIMALS = {
+    BTCUSDT: 2, ETHUSDT: 2, SOLUSDT: 3, BNBUSDT: 2,
+    ADAUSDT: 4, DOGEUSDT: 5, DOTUSDT: 3, AVAXUSDT: 2,
+    LTCUSDT: 2, LINKUSDT: 3, MATICUSDT: 4
+};
+
+// Pick a sensible decimal count for a price based on its magnitude. Mirrors
+// utils/indicatorBundle.js#smartPriceDigits so 5-pair table cells, the best
+// trade card, and the prompt all show the same level of precision.
+function priceDigitsFromMagnitude(price) {
+    if (!Number.isFinite(price) || price === 0) return 4;
+    const abs = Math.abs(price);
+    if (abs >= 1000) return 2;
+    if (abs >= 1) return 4;
+    if (abs >= 0.01) return 5;
+    return 6;
+}
+
+// Format a price as a "$1,234.56" string. If `pair` is provided and known,
+// uses the exchange tick-size decimals for that pair so e.g. DOGE prices
+// keep all 5 decimals on mobile instead of being rounded to $0.08.
+function formatPrice(price, pair, fallback = '--') {
+    if (!Number.isFinite(price)) return fallback;
+    const sym = pair ? String(pair).replace('/', '').toUpperCase() : null;
+    const digits = (sym && PAIR_PRICE_DECIMALS[sym] != null)
+        ? PAIR_PRICE_DECIMALS[sym]
+        : priceDigitsFromMagnitude(price);
+    return '$' + price.toLocaleString('en-US', {
+        minimumFractionDigits: digits,
+        maximumFractionDigits: digits
+    });
+}
+
 // Empty set means "use all pairs" (backend default). Persisted in localStorage.
 function getSelectedPairs() {
     try {
@@ -558,9 +594,9 @@ async function runAnalysis() {
             pairEl.textContent = t.pair || '--';
             directionEl.textContent = t.direction || '--';
             directionEl.dataset.dir = (t.direction || '').toUpperCase();
-            entryPriceEl.textContent = t.entryPrice ? '$' + t.entryPrice.toLocaleString() : '--';
-            tpEl.textContent = t.tp ? '$' + t.tp.toLocaleString() : '--';
-            slEl.textContent = t.sl ? '$' + t.sl.toLocaleString() : '--';
+            entryPriceEl.textContent = formatPrice(t.entryPrice, t.pair);
+            tpEl.textContent = formatPrice(t.tp, t.pair);
+            slEl.textContent = formatPrice(t.sl, t.pair);
             
             if (t.entryPrice && t.tp && t.sl) {
                 const rr = (t.tp - t.entryPrice) / (t.entryPrice - t.sl);
@@ -590,7 +626,9 @@ if (t.executed) {
             tradeActions.style.display = 'flex';
             const usdtValue = t.positionSize && t.entryPrice ? (t.positionSize * t.entryPrice).toFixed(2) : '--';
             document.getElementById('positionInfo').textContent = usdtValue !== '--' ? '$' + usdtValue : '--';
-            document.getElementById('priceInfo').textContent = t.entryPrice ? '$' + t.entryPrice.toLocaleString() : (t.orderType === 'market' ? 'Рыночная' : '--');
+            document.getElementById('priceInfo').textContent = t.entryPrice
+                ? formatPrice(t.entryPrice, t.pair)
+                : (t.orderType === 'market' ? 'Рыночная' : '--');
             
             document.getElementById('bestTrade').style.display = 'block';
             
@@ -693,9 +731,9 @@ portfolioBtn.addEventListener('click', async () => {
                 <td data-label="#" class="cell-num">${i + 1}</td>
                 <td data-label="Пара" class="cell-pair"><strong>${p.pair}</strong></td>
                 <td data-label="Направление" class="cell-dir"><span class="dir ${p.direction.toLowerCase()}"><span class="dot"></span>${p.direction}</span></td>
-                <td data-label="Вход" class="cell-entry">$${p.entryPrice?.toFixed(2) || '-'}</td>
-                <td data-label="TP" class="cell-tp">${p.tp ? '$' + p.tp.toFixed(2) : '-'}</td>
-                <td data-label="SL" class="cell-sl">${p.sl ? '$' + p.sl.toFixed(2) : '-'}</td>
+                <td data-label="Вход" class="cell-entry">${formatPrice(p.entryPrice, p.pair, '-')}</td>
+                <td data-label="TP" class="cell-tp">${formatPrice(p.tp, p.pair, '-')}</td>
+                <td data-label="SL" class="cell-sl">${formatPrice(p.sl, p.pair, '-')}</td>
                 <td data-label="Уверенность" class="cell-conf">${p.confidence != null ? p.confidence + '/10' : '--/10'}</td>
                 <td data-label="Обоснование" class="cell-reason">${p.reason || '-'}</td>
                 <td class="cell-action">
@@ -857,11 +895,11 @@ portfolioAnalyzeBtn.addEventListener('click', async () => {
 
         let tpslCell = '-';
         if (p.tp != null && p.sl != null) {
-          tpslCell = `TP $${p.tp.toFixed(2)} / SL $${p.sl.toFixed(2)}`;
+          tpslCell = `TP ${formatPrice(p.tp, p.symbol)} / SL ${formatPrice(p.sl, p.symbol)}`;
         } else if (p.tp != null) {
-          tpslCell = `TP $${p.tp.toFixed(2)}`;
+          tpslCell = `TP ${formatPrice(p.tp, p.symbol)}`;
         } else if (p.sl != null) {
-          tpslCell = `SL $${p.sl.toFixed(2)}`;
+          tpslCell = `SL ${formatPrice(p.sl, p.symbol)}`;
         }
 
         let typeCell;
@@ -889,8 +927,8 @@ portfolioAnalyzeBtn.addEventListener('click', async () => {
         <tr>
           <td>${symbolCell}</td>
           <td>${qtyDisplay}</td>
-          <td>$${p.avgPrice.toFixed(2)}</td>
-          <td>$${p.currentPrice.toFixed(2)}</td>
+          <td>${formatPrice(p.avgPrice, p.symbol)}</td>
+          <td>${formatPrice(p.currentPrice, p.symbol)}</td>
           <td>${tpslCell}</td>
           <td>${typeCell}</td>
           <td>${chanceCell}</td>
@@ -1211,7 +1249,7 @@ function showManualInput() {
                 <label for="manualPrice">Лимит-цена <span class="required" aria-hidden="true">*</span></label>
                 <div class="input-with-suggest">
                     <input type="number" id="manualPrice" step="0.0001" min="0" inputmode="decimal" aria-required="true" autocomplete="off" placeholder="USDT">
-                    ${suggestedPrice ? `<button type="button" class="input-suggest" data-target="manualPrice" data-value="${suggestedPrice}" title="Подставить рекомендацию AI">$${suggestedPrice.toLocaleString()}</button>` : ''}
+                    ${suggestedPrice ? `<button type="button" class="input-suggest" data-target="manualPrice" data-value="${suggestedPrice}" title="Подставить рекомендацию AI">${formatPrice(suggestedPrice, currentTrade?.pair)}</button>` : ''}
                 </div>
             </div>
             <div class="market-price-chip" id="marketPriceChip" hidden>
@@ -1351,7 +1389,7 @@ async function applyManualInput() {
     }
 
     document.getElementById('positionInfo').textContent = '$' + usdt.toFixed(2);
-    document.getElementById('priceInfo').textContent = price ? '$' + price.toLocaleString() : 'Рыночная';
+    document.getElementById('priceInfo').textContent = price ? formatPrice(price, currentTrade?.pair) : 'Рыночная';
 
     hideAllInputs();
 
@@ -1667,7 +1705,7 @@ async function useAIRecommendation() {
             ? ` (урезано c $${plan.ideal.toFixed(2)} — мало free margin)`
             : '';
         document.getElementById('positionInfo').textContent = '$' + plan.usdtAmount.toFixed(2) + note;
-        document.getElementById('priceInfo').textContent = currentTrade.entryPrice ? '$' + currentTrade.entryPrice.toLocaleString() : '--';
+        document.getElementById('priceInfo').textContent = currentTrade.entryPrice ? formatPrice(currentTrade.entryPrice, currentTrade.pair) : '--';
 
         // Surface the min-lot problem prominently in the status row (shared
         // with "Готово к исполнению") and disable the execute button so the
