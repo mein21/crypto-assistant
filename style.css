@@ -919,8 +919,167 @@ svg { display: block; }
     animation: aurora-shift 14s ease-in-out infinite;
     transition: transform 0.2s var(--easing);
 }
-.manual-input-wrap button:hover { transform: translateY(-1px); }
-.manual-input-wrap button:active { transform: translateY(0) scale(0.97); }
+.manual-input-wrap .manual-input button:hover { transform: none; }
+.manual-input-wrap > button { /* the Apply CTA */
+    transform: none;
+}
+.manual-input-wrap > button:hover { transform: translateY(-1px); }
+.manual-input-wrap > button:active { transform: translateY(0) scale(0.97); }
+
+/* Each labeled input column. Wrapping its own label + input + hint vertically
+   so the hint stays below the field rather than overflowing the row. */
+.manual-input {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: 1 1 140px;
+    min-width: 0;
+}
+.manual-input label {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.manual-input label .required {
+    color: var(--brand-cyan);
+    margin-left: 2px;
+}
+.manual-input .input-hint {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    line-height: 1.35;
+}
+.manual-input .input-suggest {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 1px 8px;
+    margin-left: 4px;
+    color: var(--brand-cyan);
+    font-size: 0.7rem;
+    font-family: var(--font-mono);
+    cursor: pointer;
+    transition: border-color 0.2s var(--easing), background 0.2s var(--easing);
+}
+.manual-input .input-suggest:hover {
+    border-color: var(--brand-cyan);
+    background: var(--ink-bg-subtle);
+}
+.manual-input input.input-error {
+    border-color: var(--loss);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--loss) 25%, transparent);
+}
+.manual-input .input-error-msg {
+    color: var(--loss);
+    font-size: 0.72rem;
+    line-height: 1.35;
+}
+.manual-input[hidden] { display: none !important; }
+.market-price-chip { flex: 0 0 auto; align-self: end; }
+.market-price-chip .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--ink-bg-subtle);
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    font-family: var(--font-mono);
+}
+.market-price-chip .chip strong { color: var(--brand-cyan); font-weight: 600; }
+
+/* Pair selector — collapsible chip list above the action buttons. */
+.pair-selector {
+    margin-bottom: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--ink-bg-subtle);
+}
+.pair-selector-summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    user-select: none;
+}
+.pair-selector-summary::-webkit-details-marker { display: none; }
+.pair-selector-summary::before {
+    content: '▸';
+    color: var(--text-muted);
+    transition: transform 0.2s var(--easing);
+    display: inline-block;
+}
+.pair-selector[open] .pair-selector-summary::before { transform: rotate(90deg); }
+.pair-selector-title { flex: 1; font-weight: 500; }
+.pair-selector-count {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--brand-cyan);
+    background: var(--ink-bg-medium);
+    padding: 2px 8px;
+    border-radius: 999px;
+}
+.pair-selector-body {
+    padding: 0 14px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.pair-selector-controls {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.pair-bulk {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 4px 10px;
+    color: var(--text-secondary);
+    font-size: 0.72rem;
+    cursor: pointer;
+    transition: border-color 0.2s var(--easing), color 0.2s var(--easing);
+}
+.pair-bulk:hover { border-color: var(--brand-cyan); color: var(--brand-cyan); }
+.pair-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+.pair-chip {
+    cursor: pointer;
+    user-select: none;
+}
+.pair-chip input { position: absolute; opacity: 0; pointer-events: none; }
+.pair-chip span {
+    display: inline-block;
+    padding: 5px 11px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+    background: transparent;
+    transition: border-color 0.2s var(--easing), background 0.2s var(--easing), color 0.2s var(--easing);
+}
+.pair-chip input:checked + span {
+    border-color: var(--brand-cyan);
+    background: color-mix(in srgb, var(--brand-cyan) 12%, transparent);
+    color: var(--text-primary);
+}
+.pair-chip input:focus-visible + span {
+    box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.pair-chip:hover span { border-color: var(--brand-cyan); }
 
 /* -- Loaders ------------------------------------------------------------- */
 .loader {

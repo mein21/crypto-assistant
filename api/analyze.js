@@ -6,11 +6,39 @@
 const { fetchPrices, fetchCandles } = require('./_marketData');
 const { buildIndicatorBundle, formatIndicatorLine } = require('../utils/indicatorBundle');
 
-const SYMBOLS = [
+// Default symbol set when the client doesn't pass one via `?symbols=`.
+const DEFAULT_SYMBOLS = [
     'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT',
     'ADAUSDT', 'DOGEUSDT', 'DOTUSDT', 'AVAXUSDT'
 ];
+// Allowlist of pairs the backend has decimal/tick-size data for. Anything
+// outside this set would be rejected by Bybit at order time, so we don't
+// even ask the AI to consider them.
+const SUPPORTED_SYMBOLS = new Set([
+    'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT',
+    'ADAUSDT', 'DOGEUSDT', 'DOTUSDT', 'AVAXUSDT',
+    'LTCUSDT', 'LINKUSDT', 'MATICUSDT'
+]);
 const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'openai/gpt-oss-120b:free';
+
+// Parse `?symbols=BTCUSDT,ETHUSDT` (case-insensitive, validated against
+// SUPPORTED_SYMBOLS, deduped). Returns DEFAULT_SYMBOLS on empty or invalid
+// input so the endpoint behaves the same as before for clients that don't
+// pass the param.
+function pickSymbolsFromQuery(req) {
+    const raw = (req.query && req.query.symbols) || '';
+    if (typeof raw !== 'string' || !raw.trim()) return DEFAULT_SYMBOLS.slice();
+    const seen = new Set();
+    const out = [];
+    for (const part of raw.split(',')) {
+        const sym = part.trim().toUpperCase();
+        if (!SUPPORTED_SYMBOLS.has(sym)) continue;
+        if (seen.has(sym)) continue;
+        seen.add(sym);
+        out.push(sym);
+    }
+    return out.length ? out : DEFAULT_SYMBOLS.slice();
+}
 
 async function computeIndicators(prices) {
     const symbols = Object.keys(prices);
@@ -136,8 +164,9 @@ module.exports = async (req, res) => {
 
     const t0 = Date.now();
     try {
-        console.log('[analyze] fetching prices...');
-        const prices = await fetchPrices(SYMBOLS);
+        const symbols = pickSymbolsFromQuery(req);
+        console.log(`[analyze] fetching prices for ${symbols.length} symbols: ${symbols.join(',')}`);
+        const prices = await fetchPrices(symbols);
         console.log(`[analyze] prices: ${Object.keys(prices).length} symbols in ${Date.now() - t0}ms`);
         if (Object.keys(prices).length === 0) {
             return res.status(502).json({ success: false, error: 'Не удалось получить цены' });
