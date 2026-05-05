@@ -206,10 +206,28 @@ async function loadBalance() {
         return;
     }
     try {
-        const r = await fetch('/api/balance', bybitFetchOptions());
+        // cache: 'no-store' + a cachebuster make sure no browser, ServiceWorker
+        // or CDN tier returns a stale balance even if Cache-Control got dropped.
+        const opts = bybitFetchOptions();
+        opts.cache = 'no-store';
+        const r = await fetch(`/api/balance?_=${Date.now()}`, opts);
         const d = await r.json();
         if (d.success) {
-            animateNumber(balanceEl, d.balance, { decimals: 2 });
+            // Prefer equity (walletBalance + unrealised PnL) so the widget
+            // actually moves while open futures positions accrue PnL — the
+            // raw walletBalance only changes when PnL is realised.
+            const display = Number.isFinite(d.equity) && d.equity > 0 ? d.equity : d.balance;
+            animateNumber(balanceEl, display, { decimals: 2 });
+            if (balanceWidget) {
+                const tip = `Wallet: ${(d.wallet ?? d.balance).toFixed(2)} USDT\n` +
+                            `Equity: ${(d.equity ?? 0).toFixed(2)} USDT\n` +
+                            `Available: ${(d.available ?? 0).toFixed(2)} USDT\n` +
+                            `Unrealised PnL: ${(d.unrealisedPnl ?? 0).toFixed(2)} USDT\n` +
+                            `Total equity (UTA): ${(d.totalEquity ?? 0).toFixed(2)} USD\n` +
+                            `Updated: ${new Date(d.ts || Date.now()).toLocaleTimeString()}`;
+                balanceWidget.title = tip;
+                balanceWidget.dataset.lastTs = String(d.ts || Date.now());
+            }
         } else {
             balanceEl.textContent = '--';
             if (d.error && bybitConfigStatus) {
@@ -226,6 +244,30 @@ async function loadBalance() {
         setProxyConnected(false);
     }
 }
+
+// Auto-refresh the balance every 20s while the page is visible, plus refresh
+// on tab focus and on manual click of the widget. Without this, walletBalance
+// looks "frozen" between user actions.
+const BALANCE_REFRESH_MS = 20_000;
+let balanceRefreshTimer = null;
+function startBalanceAutoRefresh() {
+    if (balanceRefreshTimer) clearInterval(balanceRefreshTimer);
+    balanceRefreshTimer = setInterval(() => {
+        if (document.visibilityState === 'visible' && isBybitEnabled()) {
+            loadBalance();
+        }
+    }, BALANCE_REFRESH_MS);
+}
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && isBybitEnabled()) loadBalance();
+});
+if (balanceWidget) {
+    balanceWidget.style.cursor = 'pointer';
+    balanceWidget.addEventListener('click', () => {
+        if (isBybitEnabled()) loadBalance();
+    });
+}
+startBalanceAutoRefresh();
 
 let currentButton = null;
 let currentTrade = null;

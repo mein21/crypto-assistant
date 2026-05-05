@@ -107,6 +107,24 @@ async function getUSDTBalance(opts = {}) {
     return usdt ? parseFloat(usdt.walletBalance) : 0;
 }
 
+// Returns a richer USDT account summary so the UI can show live equity
+// (which moves with unrealised futures PnL) instead of just walletBalance.
+async function getAccountSummary(opts = {}) {
+    const data = await callBybit('/v5/account/wallet-balance', 'GET', { accountType: 'UNIFIED' }, opts);
+    const acct = data.result?.list?.[0] || {};
+    const coins = acct.coin || [];
+    const usdt = coins.find(c => c.coin === 'USDT') || {};
+    return {
+        wallet: parseFloat(usdt.walletBalance) || 0,
+        equity: parseFloat(usdt.equity) || 0,
+        available: parseFloat(usdt.availableToWithdraw) || 0,
+        unrealisedPnl: parseFloat(usdt.unrealisedPnl) || 0,
+        totalEquity: parseFloat(acct.totalEquity) || 0,
+        totalAvailableBalance: parseFloat(acct.totalAvailableBalance) || 0,
+        totalWalletBalance: parseFloat(acct.totalWalletBalance) || 0
+    };
+}
+
 async function getAllCoins(opts = {}) {
     const data = await callBybit('/v5/account/wallet-balance', 'GET', { accountType: 'UNIFIED' }, opts);
     const coins = data.result?.list?.[0]?.coin || [];
@@ -188,6 +206,11 @@ function setCors(res) {
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Worker-Url');
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    // Live account data — never let the browser, Vercel edge, or any
+    // intermediary cache a stale balance/positions/orders payload.
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
 }
 
 function errorPayload(e) {
@@ -201,6 +224,7 @@ function errorPayload(e) {
 module.exports = {
     callBybit,
     getUSDTBalance,
+    getAccountSummary,
     getAllCoins,
     getOpenOrders,
     getOrderHistory,
