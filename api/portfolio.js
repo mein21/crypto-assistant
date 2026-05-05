@@ -1,9 +1,11 @@
 // Vercel Serverless Function: POST /api/portfolio
-// Asks the AI to pick the 5 best trades across the supported symbols.
-// Returns ONLY what the AI produced. No hard-coded fallback values.
+// Asks the AI to pick the 5 best trades across the supported symbols using
+// the same multi-indicator bundle as /api/analyze (RSI + MACD + EMA +
+// Bollinger + Stoch + ATR + 8-candle history). Returns ONLY what the AI
+// produced. No hard-coded fallback values.
 
-const { IndicatorService } = require('../indicators');
 const { fetchPrices, fetchCandles } = require('./_marketData');
+const { buildIndicatorBundle, formatIndicatorLine } = require('../utils/indicatorBundle');
 
 const SYMBOLS = [
     'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT',
@@ -17,12 +19,9 @@ async function computeIndicators(prices) {
         try {
             const candles = await fetchCandles(symbol, '1h', 100);
             if (!candles.length) return null;
-            return [symbol, {
-                price: prices[symbol],
-                rsi: IndicatorService.calculateRSI(candles),
-                trend: IndicatorService.determineTrend(candles),
-                sr: IndicatorService.calculateSupportResistance(candles)
-            }];
+            const bundle = buildIndicatorBundle(candles);
+            if (!bundle) return null;
+            return [symbol, bundle];
         } catch (e) {
             console.error(`indicator ${symbol}:`, e.message);
             return null;
@@ -37,21 +36,18 @@ function buildPrompt(prices, indicators) {
         .join('\n');
 
     const indLines = Object.entries(indicators)
-        .map(([s, i]) => {
-            const rsi = i.rsi != null ? i.rsi.toFixed(0) : 'N/A';
-            const sup = i.sr && i.sr.support != null ? i.sr.support.toFixed(2) : 'N/A';
-            const res = i.sr && i.sr.resistance != null ? i.sr.resistance.toFixed(2) : 'N/A';
-            return `- ${s}: RSI=${rsi}, Trend=${i.trend}, Support=$${sup}, Resistance=$${res}`;
-        })
+        .map(([s, b]) => formatIndicatorLine(s, b, prices[s]))
         .join('\n');
 
-    return `Ты профессиональный криптотрейдер. Выбери 5 лучших сделок на основе данных ниже и верни их строго в виде JSON.
+    return `Ты профессиональный криптотрейдер. Выбери 5 лучших сделок на основе данных ниже и верни их строго в виде JSON-массива.
 
 Текущие цены:
 ${priceLines}
 
-Технические индикаторы (1h timeframe):
+Технические индикаторы (1h timeframe) — RSI, MACD, EMA20/EMA50, Bollinger Bands (с %B), Stochastic %K/%D, ATR, тренд, поддержка/сопротивление + история последних 8 свечей (close, ΔPрice, RSI, MACD_hist):
 ${indLines}
+
+Используй комбинацию минимум 3 индикаторов (например, согласование RSI + MACD + EMA-кросс или Bollinger + Stoch + ATR), а не один RSI. Учитывай динамику последних 8 свечей: куда движутся цена и индикаторы (импульс, дивергенции, развороты), а не только мгновенный срез. Кратко обоснуй выбор парой индикаторов с упоминанием тренда последних свечей.
 
 Верни строго JSON-массив из 5 элементов, без markdown, без пояснений до или после:
 [
@@ -61,14 +57,15 @@ ${indLines}
     "entryPrice": 12345.67,
     "tp": 13000.00,
     "sl": 12000.00,
-    "confidence": 80,
+    "confidence": 8,
     "reason": "Краткое обоснование на русском"
   }
 ]
 
-ПРАВИЛА TP/SL:
+ПРАВИЛА:
 - LONG: TP > entryPrice, SL < entryPrice
-- SHORT: TP < entryPrice, SL > entryPrice`;
+- SHORT: TP < entryPrice, SL > entryPrice
+- confidence — целое число от 1 до 10, где 10 — максимальная уверенность.`;
 }
 
 async function callOpenRouter(prompt, apiKey) {
@@ -121,6 +118,15 @@ function toNumberOrNull(v) {
     return Number.isFinite(n) ? n : null;
 }
 
+// Some models return confidence on a 0-100 scale despite the prompt asking
+// for 0-10. Squash anything > 10 down to /10 so the UI is consistent.
+function normaliseConfidence(v) {
+    const n = toNumberOrNull(v);
+    if (n == null) return null;
+    if (n > 10) return Math.round(n / 10);
+    return n;
+}
+
 function normalisePair(p) {
     return {
         pair: p.pair ? String(p.pair).replace('/', '') : '',
@@ -128,7 +134,7 @@ function normalisePair(p) {
         entryPrice: toNumberOrNull(p.entryPrice),
         tp: toNumberOrNull(p.tp),
         sl: toNumberOrNull(p.sl),
-        confidence: toNumberOrNull(p.confidence),
+        confidence: normaliseConfidence(p.confidence),
         reason: p.reason ? String(p.reason) : ''
     };
 }
