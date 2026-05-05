@@ -1580,6 +1580,52 @@ svg { display: block; }
     .theme-toggle { top: 12px; right: 12px; width: 36px; height: 36px; }
 }
 
+/* -- Balance auto-refresh toggle (sits left of the theme toggle) -------- */
+.refresh-toggle {
+    position: fixed;
+    top: 18px;
+    right: 70px;
+    z-index: 1000;
+    width: 40px;
+    height: 40px;
+    display: inline-grid;
+    place-items: center;
+    border-radius: 999px;
+    background: var(--bg-surface-strong);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    backdrop-filter: var(--blur-sm);
+    -webkit-backdrop-filter: var(--blur-sm);
+    box-shadow: var(--shadow-card);
+    transition: transform 0.25s var(--easing), background 0.25s var(--easing),
+                border-color 0.25s var(--easing), box-shadow 0.25s var(--easing),
+                color 0.25s var(--easing);
+}
+.refresh-toggle:hover {
+    transform: translateY(-1px) rotate(-6deg);
+    border-color: var(--border-strong);
+    box-shadow: var(--shadow-card-hover);
+}
+.refresh-toggle:active { transform: translateY(0) scale(0.96); }
+.refresh-toggle svg { display: block; }
+/* When on: spin the refresh icon slowly + green tint to signal "live". */
+.refresh-toggle[data-state="on"]  .icon-off { display: none; }
+.refresh-toggle[data-state="on"]  .icon-on {
+    animation: refresh-spin 4s linear infinite;
+    color: #22c55e;
+}
+.refresh-toggle[data-state="off"] .icon-on  { display: none; }
+.refresh-toggle[data-state="off"] .icon-off { color: var(--text-secondary, #888); }
+
+@keyframes refresh-spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+}
+
+@media (max-width: 480px) {
+    .refresh-toggle { top: 12px; right: 56px; width: 36px; height: 36px; }
+}
+
 /* -- Cursor web (desktop only) ------------------------------------------- */
 /*
  * Decorative canvas that draws thin threads hanging from the cursor on

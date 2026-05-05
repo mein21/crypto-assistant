@@ -264,10 +264,23 @@ async function loadBalance() {
 // active in the last 5 minutes. Without this, walletBalance/equity looks
 // "frozen" between user actions; with it, we still don't burn Vercel /
 // Bybit quota when the tab is just sitting open in the background.
+// The user can also disable polling entirely via the round toggle button
+// next to the theme switcher (state persisted in localStorage).
 const BALANCE_REFRESH_MS = 60_000;            // 60s — ~1440 calls/day per active tab
 const BALANCE_IDLE_TIMEOUT_MS = 5 * 60_000;   // pause polling after 5 min idle
+const BALANCE_AUTOREFRESH_KEY = 'balanceAutoRefresh';
 let balanceRefreshTimer = null;
 let lastUserActivityTs = Date.now();
+
+function isBalanceAutoRefreshOn() {
+    try {
+        const raw = localStorage.getItem(BALANCE_AUTOREFRESH_KEY);
+        // default = on if nothing was ever stored
+        return raw === null ? true : raw === 'on';
+    } catch (_) {
+        return true;
+    }
+}
 
 function noteUserActivity() { lastUserActivityTs = Date.now(); }
 ['mousemove', 'keydown', 'click', 'scroll', 'touchstart'].forEach(evt => {
@@ -276,6 +289,7 @@ function noteUserActivity() { lastUserActivityTs = Date.now(); }
 
 function startBalanceAutoRefresh() {
     if (balanceRefreshTimer) clearInterval(balanceRefreshTimer);
+    if (!isBalanceAutoRefreshOn()) return;
     balanceRefreshTimer = setInterval(() => {
         if (document.visibilityState !== 'visible') return;
         if (!isBybitEnabled()) return;
@@ -283,19 +297,53 @@ function startBalanceAutoRefresh() {
         loadBalance();
     }, BALANCE_REFRESH_MS);
 }
+function stopBalanceAutoRefresh() {
+    if (balanceRefreshTimer) {
+        clearInterval(balanceRefreshTimer);
+        balanceRefreshTimer = null;
+    }
+}
 document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && isBybitEnabled()) {
         noteUserActivity();
-        loadBalance();
+        if (isBalanceAutoRefreshOn()) loadBalance();
     }
 });
 if (balanceWidget) {
     balanceWidget.style.cursor = 'pointer';
     balanceWidget.addEventListener('click', () => {
         noteUserActivity();
+        // Manual click always refreshes regardless of auto-refresh setting.
         if (isBybitEnabled()) loadBalance();
     });
 }
+
+(function setupBalanceRefreshToggle() {
+    const btn = document.getElementById('balanceRefreshToggle');
+    if (!btn) return;
+    const apply = (on) => {
+        btn.dataset.state = on ? 'on' : 'off';
+        btn.title = on
+            ? 'Авто-обновление баланса каждые 60с (клик — выключить)'
+            : 'Авто-обновление выключено (клик — включить)';
+        btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    };
+    apply(isBalanceAutoRefreshOn());
+    btn.addEventListener('click', () => {
+        const next = !isBalanceAutoRefreshOn();
+        try { localStorage.setItem(BALANCE_AUTOREFRESH_KEY, next ? 'on' : 'off'); }
+        catch (_) { /* private mode — behave as in-memory only */ }
+        apply(next);
+        if (next) {
+            noteUserActivity();
+            startBalanceAutoRefresh();
+            if (isBybitEnabled()) loadBalance();
+        } else {
+            stopBalanceAutoRefresh();
+        }
+    });
+})();
+
 startBalanceAutoRefresh();
 
 let currentButton = null;
