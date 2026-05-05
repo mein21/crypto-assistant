@@ -6,29 +6,31 @@
 const { fetchPrices, fetchCandles } = require('./_marketData');
 const { buildIndicatorBundle, formatIndicatorLine } = require('../utils/indicatorBundle');
 const { fetchLatestNews, formatNewsBlock, formatUpcomingHints } = require('./_news');
+const { enforceMinRR } = require('./_rrGuard');
 
 // Default symbol set when the client doesn't pass one via `?symbols=`.
+// Pairs priced in 4+ decimals (ADA/DOGE/MATIC) are intentionally excluded
+// from the trading universe — their tick size is small enough that the
+// model frequently produces TP/SL pairs whose RR rounds to 0.
 const DEFAULT_SYMBOLS = [
     'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT',
-    'ADAUSDT', 'DOGEUSDT', 'DOTUSDT', 'AVAXUSDT'
+    'DOTUSDT', 'AVAXUSDT', 'LTCUSDT', 'LINKUSDT'
 ];
-// Allowlist of pairs the backend has decimal/tick-size data for. Anything
-// outside this set would be rejected by Bybit at order time, so we don't
-// even ask the AI to consider them.
+// Allowlist of pairs the backend has decimal/tick-size data for AND that
+// we're willing to trade. Anything outside this set would be rejected at
+// order time, so we don't even ask the AI to consider them.
 const SUPPORTED_SYMBOLS = new Set([
     'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT',
-    'ADAUSDT', 'DOGEUSDT', 'DOTUSDT', 'AVAXUSDT',
-    'LTCUSDT', 'LINKUSDT', 'MATICUSDT'
+    'DOTUSDT', 'AVAXUSDT', 'LTCUSDT', 'LINKUSDT'
 ]);
-// Default switched from `gpt-oss-120b:free` (21 tok/s on the free provider —
-// slow enough to hit Vercel's 60s timeout when the prompt is long) to its
-// smaller MoE sibling `gpt-oss-20b:free` (21B params, ~5x faster). Same
-// JSON-output and instruction-following behaviour for our scoring procedure.
-// Operators can still pin a different model via OPENROUTER_MODEL.
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'openai/gpt-oss-20b:free';
+// User prefers the smarter 120b model over the faster 20b sibling. Vercel
+// function maxDuration was bumped to 90s in vercel.json so a single trade
+// fits comfortably even at ~21 tok/s on the free OpenInference provider.
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'openai/gpt-oss-120b:free';
 // Hard ceiling on the OpenRouter call so a slow upstream returns a clean
-// error instead of letting Vercel kill the function with a 504.
-const OPENROUTER_TIMEOUT_MS = 50_000;
+// error instead of letting Vercel kill the function. Sized just under
+// Vercel's 90s maxDuration.
+const OPENROUTER_TIMEOUT_MS = 80_000;
 
 // Parse `?symbols=BTCUSDT,ETHUSDT` (case-insensitive, validated against
 // SUPPORTED_SYMBOLS, deduped). Returns DEFAULT_SYMBOLS on empty or invalid
@@ -98,10 +100,22 @@ ${newsSection}
 3) Если |балл|<3 или конфликт 3/3 → direction="HET", reason="смешанные сигналы". Не угадывай.
 4) Сильный негатив в новостях (взлом/SEC) → снижай confidence или HET. Сильный позитив (ETF) → +confidence на LONG.
 
+CONFIDENCE — НЕ ставь 5 «по умолчанию». Считай по формуле от |балла|:
+|балл|=0→4, |балл|=1→5, |балл|=2→6, |балл|=3→7, |балл|=4→8, |балл|=5→9, |балл|=6→10.
+±1 за сильный новостной фон по этой паре.
+
+REASON — строго на русском языке. Никаких английских слов («bullish», «hist positive», «trend up» и т.п.) — пиши «бычий», «гистограмма растёт», «восходящий тренд». Допустимы только аббревиатуры индикаторов (EMA, MACD, RSI, Stoch, Bollinger, %B, %K, ATR, S/R) и тикеры пар.
+
 JSON:
-{"pair":"BTCUSDT","direction":"LONG|SHORT|HET","entryPrice":N,"tp":N,"sl":N,"confidence":1-10,"reason":"балл, ключевые индикаторы, новости если повлияли"}
+{"pair":"BTCUSDT","direction":"LONG|SHORT|HET","entryPrice":N,"tp":N,"sl":N,"confidence":1-10,"reason":"кратко по-русски: балл, ключевые индикаторы, новости если повлияли"}
 
 LONG: TP>entry, SL<entry. SHORT: TP<entry, SL>entry. HET: entry/tp/sl можно null.
+RR = (tp-entry)/(entry-sl) для LONG, (entry-tp)/(sl-entry) для SHORT. Допустимый RR зависит от уверенности:
+- confidence ≥ 8 → RR ≥ 0.5
+- confidence ≥ 6 → RR ≥ 1.0
+- иначе → RR ≥ 1.5
+RR ≤ 0 (TP на/за entry в неправильную сторону) — НИКОГДА. Лучше HET.
+TP минимум на 0.2% от entry (round-trip taker fee Bybit 0.11%, иначе сделка убыточна по комиссии).
 Только JSON, без markdown и комментариев.`;
 }
 
@@ -230,7 +244,7 @@ module.exports = async (req, res) => {
 
         // Strictly use AI-provided values; only normalise numeric types so the
         // frontend can call .toLocaleString() / .toFixed() without crashing.
-        const trade = {
+        const rawTrade = {
             pair: String(aiTrade.pair).replace('/', ''),
             direction: String(aiTrade.direction).toUpperCase(),
             entryPrice: toNumberOrNull(aiTrade.entryPrice),
@@ -239,6 +253,11 @@ module.exports = async (req, res) => {
             confidence: toNumberOrNull(aiTrade.confidence),
             reason: aiTrade.reason ? String(aiTrade.reason) : ''
         };
+
+        // Demote LONG/SHORT trades whose RR < TRADING_MIN_RR (default 1.5)
+        // to HET. The free model occasionally proposes TP almost on top of
+        // entry — that's a sub-1 RR after fees, i.e. guaranteed loss.
+        const trade = enforceMinRR(rawTrade);
 
         return res.status(200).json({
             success: true,
