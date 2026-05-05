@@ -186,18 +186,52 @@ async function cancelOrder(orderId, symbol, category = 'linear', opts = {}) {
     return callBybit('/v5/order/cancel', 'POST', { category, symbol, orderId }, opts);
 }
 
+// Per-symbol tick decimals for price/TP/SL rounding. Bybit rejects orders with
+// more decimal places than the contract supports.
+const PRICE_DECIMALS = {
+    BTCUSDT: 2, ETHUSDT: 2, SOLUSDT: 3, BNBUSDT: 2,
+    ADAUSDT: 4, DOGEUSDT: 5, DOTUSDT: 3, AVAXUSDT: 2,
+    LTCUSDT: 2, LINKUSDT: 3, MATICUSDT: 4
+};
+
+function roundOrderPrice(symbol, price) {
+    if (price === null || price === undefined || price === '') return null;
+    const n = Number(price);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    const d = PRICE_DECIMALS[symbol] ?? 2;
+    return parseFloat(n.toFixed(d));
+}
+
 async function placeFuturesOrder(symbol, side, qty, price = null, tp = null, sl = null, opts = {}) {
+    const roundedPrice = roundOrderPrice(symbol, price);
+    const roundedTp = roundOrderPrice(symbol, tp);
+    const roundedSl = roundOrderPrice(symbol, sl);
+
     const params = {
         category: 'linear',
         symbol,
         side,
-        orderType: price ? 'Limit' : 'Market',
+        orderType: roundedPrice ? 'Limit' : 'Market',
         qty: String(qty),
         timeInForce: 'GTC'
     };
-    if (price) params.price = String(price);
-    if (tp) params.takeProfit = String(tp);
-    if (sl) params.stopLoss = String(sl);
+    if (roundedPrice) params.price = String(roundedPrice);
+    if (roundedTp || roundedSl) {
+        // Without these explicit fields Bybit V5 sometimes silently drops the
+        // attached TP/SL on market orders, depending on the account's tpsl
+        // mode. Setting them explicitly makes the behaviour deterministic.
+        params.tpslMode = 'Full';
+        if (roundedTp) {
+            params.takeProfit = String(roundedTp);
+            params.tpTriggerBy = 'LastPrice';
+            params.tpOrderType = 'Market';
+        }
+        if (roundedSl) {
+            params.stopLoss = String(roundedSl);
+            params.slTriggerBy = 'LastPrice';
+            params.slOrderType = 'Market';
+        }
+    }
     return callBybit('/v5/order/create', 'POST', params, opts);
 }
 
