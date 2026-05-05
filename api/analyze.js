@@ -3,8 +3,8 @@
 // No hard-coded fallback values are returned: if the AI fails or returns an
 // invalid signal, the response will be { success: false, error, raw }.
 
-const { IndicatorService } = require('../indicators');
 const { fetchPrices, fetchCandles } = require('./_marketData');
+const { buildIndicatorBundle, formatIndicatorLine } = require('../utils/indicatorBundle');
 
 const SYMBOLS = [
     'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT',
@@ -18,12 +18,9 @@ async function computeIndicators(prices) {
         try {
             const candles = await fetchCandles(symbol, '1h', 100);
             if (!candles.length) return null;
-            return [symbol, {
-                price: prices[symbol],
-                rsi: IndicatorService.calculateRSI(candles),
-                trend: IndicatorService.determineTrend(candles),
-                sr: IndicatorService.calculateSupportResistance(candles)
-            }];
+            const bundle = buildIndicatorBundle(candles);
+            if (!bundle) return null;
+            return [symbol, bundle];
         } catch (e) {
             console.error(`indicator ${symbol}:`, e.message);
             return null;
@@ -38,21 +35,18 @@ function buildPrompt(prices, indicators) {
         .join('\n');
 
     const indLines = Object.entries(indicators)
-        .map(([s, i]) => {
-            const rsi = i.rsi != null ? i.rsi.toFixed(0) : 'N/A';
-            const sup = i.sr && i.sr.support != null ? i.sr.support.toFixed(2) : 'N/A';
-            const res = i.sr && i.sr.resistance != null ? i.sr.resistance.toFixed(2) : 'N/A';
-            return `- ${s}: RSI=${rsi}, Trend=${i.trend}, Support=$${sup}, Resistance=$${res}`;
-        })
+        .map(([s, b]) => formatIndicatorLine(s, b, prices[s]))
         .join('\n');
 
-    return `Ты профессиональный криптотрейдер. Проанализируй рынок и дай ОДНУ лучшую рекомендацию строго в виде JSON-объекта.
+    return `Ты профессиональный криптотрейдер. Проанализируй рынок по нескольким индикаторам и дай ОДНУ лучшую рекомендацию строго в виде JSON-объекта.
 
 Текущие цены:
 ${priceLines}
 
-Технические индикаторы (1h timeframe):
+Технические индикаторы (1h timeframe) — RSI, MACD, EMA20/EMA50, Bollinger Bands (с %B), Stochastic %K, ATR, тренд, поддержка/сопротивление:
 ${indLines}
+
+Используй комбинацию минимум 3 индикаторов (например, согласование RSI + MACD + EMA-кросс или Bollinger + Stoch + ATR), а не один RSI. Кратко обоснуй выбор парой индикаторов.
 
 Верни JSON со следующими полями:
 {
