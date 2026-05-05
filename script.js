@@ -1248,11 +1248,12 @@ function freeMarginFromBalance(d) {
     return Math.max(totalAvail, usdtWithdraw);
 }
 
-// Effective tradeable equity in USD/USDT terms. On UTA cross-margin a user
-// can have $X in BTC/USDC/etc. and 0 USDT in `walletBalance`, yet still place
-// USDT-perpetual orders backed by that cross-coin collateral. Sizing only
-// against USDT walletBalance would set ideal to 0 and block the trade.
-// We therefore prefer the largest equity field reported by Bybit:
+// Returns the user's effective tradeable equity in USD/USDT terms.
+// On UTA cross-margin a user can have $X in BTC/USDC/etc. and 0 USDT in
+// `walletBalance`, yet still place USDT-perpetual orders backed by that
+// cross-coin collateral. Using only USDT walletBalance here would size the
+// order to 0 and block the trade entirely. We therefore prefer the largest
+// equity field reported by Bybit:
 //   - totalEquity         (UTA: USD across all coins, headline number)
 //   - equity              (USDT-only equity incl. unrealised PnL)
 //   - totalWalletBalance  (UTA: USD wallet across all coins, no PnL)
@@ -1261,8 +1262,8 @@ function effectiveEquityFromBalance(d) {
     const totalEquity        = parseFloat(d?.totalEquity) || 0;
     const usdtEquity         = parseFloat(d?.equity) || 0;
     const totalWalletBalance = parseFloat(d?.totalWalletBalance) || 0;
-    const wallet             = parseFloat(d?.balance ?? d?.wallet) || 0;
-    return Math.max(totalEquity, usdtEquity, totalWalletBalance, wallet);
+    const usdtWallet         = parseFloat(d?.wallet ?? d?.balance) || 0;
+    return Math.max(totalEquity, usdtEquity, totalWalletBalance, usdtWallet);
 }
 
 // Compute order size in USDT:
