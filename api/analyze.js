@@ -6,7 +6,7 @@
 const { fetchPrices, fetchCandles } = require('./_marketData');
 const { buildIndicatorBundle, formatIndicatorLine } = require('../utils/indicatorBundle');
 const { fetchLatestNews, formatNewsBlock, formatUpcomingHints } = require('./_news');
-const { enforceMinRR, DEFAULT_MIN_RR } = require('./_rrGuard');
+const { enforceMinRR } = require('./_rrGuard');
 
 // Default symbol set when the client doesn't pass one via `?symbols=`.
 // Pairs priced in 4+ decimals (ADA/DOGE/MATIC) are intentionally excluded
@@ -110,8 +110,12 @@ JSON:
 {"pair":"BTCUSDT","direction":"LONG|SHORT|HET","entryPrice":N,"tp":N,"sl":N,"confidence":1-10,"reason":"кратко по-русски: балл, ключевые индикаторы, новости если повлияли"}
 
 LONG: TP>entry, SL<entry. SHORT: TP<entry, SL>entry. HET: entry/tp/sl можно null.
-RR (reward/risk) ≥ ${DEFAULT_MIN_RR}: для LONG (tp-entry)/(entry-sl) ≥ ${DEFAULT_MIN_RR}; для SHORT (entry-tp)/(sl-entry) ≥ ${DEFAULT_MIN_RR}. RR ниже — это HET, никогда не давай LONG/SHORT с RR<${DEFAULT_MIN_RR}.
-TP минимум на 0.2% от entry (round-trip taker fee Bybit 0.11%).
+RR = (tp-entry)/(entry-sl) для LONG, (entry-tp)/(sl-entry) для SHORT. Допустимый RR зависит от уверенности:
+- confidence ≥ 8 → RR ≥ 0.5
+- confidence ≥ 6 → RR ≥ 1.0
+- иначе → RR ≥ 1.5
+RR ≤ 0 (TP на/за entry в неправильную сторону) — НИКОГДА. Лучше HET.
+TP минимум на 0.2% от entry (round-trip taker fee Bybit 0.11%, иначе сделка убыточна по комиссии).
 Только JSON, без markdown и комментариев.`;
 }
 
