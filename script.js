@@ -858,7 +858,34 @@ async function executeTrade() {
             btn.disabled = false;
             return;
         }
-        
+
+        // Defence in depth: even if the cached usdtAmount was sized correctly
+        // when AI recommended, the user may have opened other positions in the
+        // meantime which ate into available margin. Re-check just before sending
+        // so we never send an order Bybit will reject with 110007.
+        if (price && currentTrade.usdtAmount && isBybitEnabled()) {
+            try {
+                const fr = await fetch('/api/balance', bybitFetchOptions());
+                const fd = await fr.json();
+                if (fd && fd.success) {
+                    const live = planOrderUsdt(fd);
+                    if (live.usdtAmount <= 0) {
+                        statusValueEl.textContent = '❌ Свободного USDT-баланса нет (Bybit available=$' + (live.available || 0).toFixed(2) + ')';
+                        statusValueEl.className = 'status-value error';
+                        btn.disabled = false;
+                        btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg> Выставить';
+                        return;
+                    }
+                    if (live.usdtAmount + 0.01 < currentTrade.usdtAmount) {
+                        const newQty = parseFloat((live.usdtAmount / price).toFixed(4));
+                        console.log(`Sizing reduced just before send: qty ${qty} -> ${newQty} (free margin $${live.available.toFixed(2)})`);
+                        qty = newQty;
+                        currentTrade.usdtAmount = live.usdtAmount;
+                    }
+                }
+            } catch (_) { /* network blip — fall through and let Bybit decide */ }
+        }
+
         console.log('Calculated qty:', qty, 'price:', price);
         
 const payload = {
@@ -971,6 +998,28 @@ function applyManualInput() {
     hideAllInputs();
 }
 
+// Compute an order size in USDT that:
+//   1. aims for ~10% of the user's USDT walletBalance (their "ideal risk slice"),
+//   2. but never exceeds 95% of free margin (`availableToWithdraw`) — the 5%
+//      cushion absorbs taker fees + price slippage between sizing and fill.
+// Without the second cap Bybit rejects the order with `110007 ab not enough`
+// when the account already has open positions consuming most of its margin.
+function planOrderUsdt(d) {
+    const wallet    = parseFloat(d?.balance ?? d?.wallet) || 0;
+    const available = parseFloat(d?.available) || 0;
+    const ideal = wallet * 0.1;
+    // If the proxy didn't return availableToWithdraw (older response shapes),
+    // fall back to the wallet-based slice so we don't accidentally size to 0.
+    const cap   = available > 0 ? available * 0.95 : ideal;
+    const usdt  = Math.max(0, Math.min(ideal, cap));
+    return {
+        usdtAmount: parseFloat(usdt.toFixed(2)),
+        wasReduced: usdt + 0.01 < ideal,
+        ideal: parseFloat(ideal.toFixed(2)),
+        available
+    };
+}
+
 async function useAIRecommendation() {
     if (!currentTrade) {
         alert('Нет данных о сделке');
@@ -986,14 +1035,19 @@ async function useAIRecommendation() {
         console.log('Balance response:', d);
         
         if (d.balance) {
-            const balance = parseFloat(d.balance);
-            const usdtAmount = parseFloat((balance * 0.1).toFixed(2));
-            
-            currentTrade.usdtAmount = usdtAmount;
-            
-            console.log('Updated trade:', currentTrade);
-            
-            document.getElementById('positionInfo').textContent = '$' + usdtAmount.toFixed(2);
+            const plan = planOrderUsdt(d);
+            if (plan.usdtAmount <= 0) {
+                alert('Свободного USDT-баланса нет. Закрой какие-нибудь позиции или пополни счёт.');
+                return;
+            }
+            currentTrade.usdtAmount = plan.usdtAmount;
+
+            console.log('Updated trade:', currentTrade, 'plan:', plan);
+
+            const note = plan.wasReduced
+                ? ` (урезано c $${plan.ideal.toFixed(2)} — мало free margin)`
+                : '';
+            document.getElementById('positionInfo').textContent = '$' + plan.usdtAmount.toFixed(2) + note;
             document.getElementById('priceInfo').textContent = currentTrade.entryPrice ? '$' + currentTrade.entryPrice.toLocaleString() : '--';
         } else {
             alert('Не удалось получить баланс');
@@ -1023,9 +1077,16 @@ async function executePairOrder(index) {
         const d = await r.json();
         
         if (d.balance) {
-            const balance = parseFloat(d.balance);
-            const usdtAmount = parseFloat((balance * 0.1).toFixed(2));
-            
+            const plan = planOrderUsdt(d);
+            if (plan.usdtAmount <= 0) {
+                alert(`По ${pair.pair}: свободного USDT-баланса нет. Закрой какие-нибудь позиции или пополни счёт.`);
+                return;
+            }
+            const usdtAmount = plan.usdtAmount;
+            if (plan.wasReduced) {
+                console.log(`[${pair.pair}] sizing reduced from $${plan.ideal} to $${usdtAmount} (free margin $${plan.available.toFixed(2)})`);
+            }
+
             const qty = parseFloat((usdtAmount / pair.entryPrice).toFixed(4));
             
             const r2 = await fetch('/api/execute', bybitFetchOptions({
