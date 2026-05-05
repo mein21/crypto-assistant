@@ -444,6 +444,69 @@ svg { display: block; }
     animation: fade-down 0.4s var(--easing) both;
     font-size: 0.85rem;
 }
+/* Two states for the proxy panel:
+   - default ("expanded"):  show the full URL input + hint
+   - .is-connected ("collapsed"): show a compact "proxy connected" chip with
+     an [Изменить] button to flip back to expanded. Triggered by a successful
+     ping in script.js. */
+.bybit-config-collapsed { display: none; }
+.bybit-config-expanded { display: contents; }
+.bybit-config.is-connected .bybit-config-collapsed {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    flex: 1 1 100%;
+}
+.bybit-config.is-connected .bybit-config-expanded { display: none; }
+.bybit-config-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border-radius: 999px;
+    background: var(--ink-bg-medium);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    font-size: 0.78rem;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+}
+.bybit-config-check {
+    display: inline-block;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-soft), 0 0 10px var(--halo);
+    color: transparent;
+    line-height: 0;
+    animation: chip-pulse 2.4s ease-in-out infinite;
+}
+@keyframes chip-pulse {
+    0%, 100% { box-shadow: 0 0 0 2px var(--accent-soft), 0 0 8px var(--halo); }
+    50%      { box-shadow: 0 0 0 4px var(--accent-soft), 0 0 14px var(--halo); }
+}
+.bybit-config-edit {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    padding: 5px 12px;
+    border-radius: 999px;
+    font-size: 0.74rem;
+    font-family: var(--font-ui);
+    cursor: pointer;
+    transition: color 0.2s var(--easing), border-color 0.2s var(--easing), background 0.2s var(--easing);
+}
+.bybit-config-edit:hover {
+    color: var(--text-primary);
+    border-color: var(--border-strong);
+    background: var(--ink-bg-subtle);
+}
+.bybit-config-edit:focus-visible {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+}
 .bybit-config-label {
     display: flex;
     align-items: center;
