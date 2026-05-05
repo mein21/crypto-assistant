@@ -1,7 +1,8 @@
 // Vercel Serverless Function: POST /api/execute-market
 // Places a Bybit linear futures MARKET order via the Cloudflare Worker proxy.
-// Body: { symbol, side, qty }
+// Body: { symbol, side, qty, tp?, sl? }
 // side: "Buy" = LONG, "Sell" = SHORT.
+// tp/sl are forwarded as attached take-profit/stop-loss on the position.
 
 const { placeFuturesOrder, getWorkerOverrides, setCors, errorPayload } = require('./_bybit');
 
@@ -31,6 +32,8 @@ module.exports = async (req, res) => {
     try {
         const body = await readJsonBody(req);
         const { symbol, side, qty } = body;
+        const tp = body.tp ?? null;
+        const sl = body.sl ?? null;
 
         if (!symbol || !side || !qty) {
             return res.status(400).json({
@@ -44,7 +47,7 @@ module.exports = async (req, res) => {
         }
 
         const opts = getWorkerOverrides(req);
-        const result = await placeFuturesOrder(symbol, side, qty, null, null, null, opts);
+        const result = await placeFuturesOrder(symbol, side, qty, null, tp, sl, opts);
         return res.status(200).json({ success: true, result });
     } catch (e) {
         console.error('execute-market error:', e.message);
