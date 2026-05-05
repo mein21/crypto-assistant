@@ -870,7 +870,10 @@ async function executeTrade() {
                 if (fd && fd.success) {
                     const live = planOrderUsdt(fd);
                     if (live.usdtAmount <= 0) {
-                        statusValueEl.textContent = '❌ Свободного USDT-баланса нет (Bybit available=$' + (live.available || 0).toFixed(2) + ')';
+                        const reason = live.equity <= 0
+                            ? 'Bybit вернул нулевой баланс — проверь прокси'
+                            : 'free margin $' + (live.available || 0).toFixed(2);
+                        statusValueEl.textContent = '❌ Свободного маржинального баланса нет (' + reason + ')';
                         statusValueEl.className = 'status-value error';
                         btn.disabled = false;
                         btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg> Выставить';
@@ -1019,18 +1022,37 @@ function freeMarginFromBalance(d) {
     return Math.max(totalAvail, usdtWithdraw);
 }
 
+// Returns the user's effective tradeable equity in USD/USDT terms.
+// On UTA cross-margin a user can have $X in BTC/USDC/etc. and 0 USDT in
+// `walletBalance`, yet still place USDT-perpetual orders backed by that
+// cross-coin collateral. Using only USDT walletBalance here would size the
+// order to 0 and block the trade entirely. We therefore prefer the largest
+// equity field reported by Bybit:
+//   - totalEquity         (UTA: USD across all coins, headline number)
+//   - equity              (USDT-only equity incl. unrealised PnL)
+//   - totalWalletBalance  (UTA: USD wallet across all coins, no PnL)
+//   - wallet              (USDT walletBalance, classic accounts)
+function effectiveEquityFromBalance(d) {
+    const totalEquity        = parseFloat(d?.totalEquity) || 0;
+    const usdtEquity         = parseFloat(d?.equity) || 0;
+    const totalWalletBalance = parseFloat(d?.totalWalletBalance) || 0;
+    const usdtWallet         = parseFloat(d?.wallet ?? d?.balance) || 0;
+    return Math.max(totalEquity, usdtEquity, totalWalletBalance, usdtWallet);
+}
+
 function planOrderUsdt(d) {
-    const wallet    = parseFloat(d?.balance ?? d?.wallet) || 0;
+    const equity    = effectiveEquityFromBalance(d);
     const available = freeMarginFromBalance(d);
-    const ideal = wallet * 0.1;
+    const ideal = equity * 0.1;
     // If the proxy returned neither availability field (older response shapes),
-    // fall back to the wallet-based slice so we don't accidentally size to 0.
+    // fall back to the equity-based slice so we don't accidentally size to 0.
     const cap   = available > 0 ? available * 0.95 : ideal;
     const usdt  = Math.max(0, Math.min(ideal, cap));
     return {
         usdtAmount: parseFloat(usdt.toFixed(2)),
         wasReduced: usdt + 0.01 < ideal,
         ideal: parseFloat(ideal.toFixed(2)),
+        equity,
         available
     };
 }
@@ -1048,25 +1070,29 @@ async function useAIRecommendation() {
         const d = await r.json();
         
         console.log('Balance response:', d);
-        
-        if (d.balance) {
-            const plan = planOrderUsdt(d);
-            if (plan.usdtAmount <= 0) {
-                alert('Свободного USDT-баланса нет. Закрой какие-нибудь позиции или пополни счёт.');
-                return;
-            }
-            currentTrade.usdtAmount = plan.usdtAmount;
 
-            console.log('Updated trade:', currentTrade, 'plan:', plan);
-
-            const note = plan.wasReduced
-                ? ` (урезано c $${plan.ideal.toFixed(2)} — мало free margin)`
-                : '';
-            document.getElementById('positionInfo').textContent = '$' + plan.usdtAmount.toFixed(2) + note;
-            document.getElementById('priceInfo').textContent = currentTrade.entryPrice ? '$' + currentTrade.entryPrice.toLocaleString() : '--';
-        } else {
-            alert('Не удалось получить баланс');
+        if (!d || d.success === false) {
+            alert('Не удалось получить баланс' + (d?.error ? `: ${d.error}` : ''));
+            return;
         }
+        const plan = planOrderUsdt(d);
+        if (plan.equity <= 0) {
+            alert('Bybit вернул нулевой баланс по этому аккаунту. Проверь, что прокси подключён к нужному счёту.');
+            return;
+        }
+        if (plan.usdtAmount <= 0) {
+            alert('Свободного маржинального баланса нет (free margin $' + plan.available.toFixed(2) + '). Закрой какие-нибудь позиции или пополни счёт.');
+            return;
+        }
+        currentTrade.usdtAmount = plan.usdtAmount;
+
+        console.log('Updated trade:', currentTrade, 'plan:', plan);
+
+        const note = plan.wasReduced
+            ? ` (урезано c $${plan.ideal.toFixed(2)} — мало free margin)`
+            : '';
+        document.getElementById('positionInfo').textContent = '$' + plan.usdtAmount.toFixed(2) + note;
+        document.getElementById('priceInfo').textContent = currentTrade.entryPrice ? '$' + currentTrade.entryPrice.toLocaleString() : '--';
     } catch (e) {
         alert('Ошибка получения баланса: ' + e.message);
     }
@@ -1091,10 +1117,18 @@ async function executePairOrder(index) {
         const r = await fetch('/api/balance', bybitFetchOptions());
         const d = await r.json();
         
-        if (d.balance) {
+        if (!d || d.success === false) {
+            alert(`Не удалось получить баланс` + (d?.error ? `: ${d.error}` : ''));
+            return;
+        }
+        {
             const plan = planOrderUsdt(d);
+            if (plan.equity <= 0) {
+                alert(`По ${pair.pair}: Bybit вернул нулевой баланс по этому аккаунту. Проверь подключение к прокси.`);
+                return;
+            }
             if (plan.usdtAmount <= 0) {
-                alert(`По ${pair.pair}: свободного USDT-баланса нет. Закрой какие-нибудь позиции или пополни счёт.`);
+                alert(`По ${pair.pair}: свободного маржинального баланса нет (free margin $${plan.available.toFixed(2)}). Закрой какие-нибудь позиции или пополни счёт.`);
                 return;
             }
             const usdtAmount = plan.usdtAmount;
