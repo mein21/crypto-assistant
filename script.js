@@ -596,23 +596,55 @@ portfolioAnalyzeBtn.addEventListener('click', async () => {
     const positionsBody = document.getElementById('positionsBody');
     if (d.openPositions && d.openPositions.length > 0) {
       positionsBody.innerHTML = d.openPositions.map(p => {
-        const price = p.tp || p.sl || '-';
-        const type = p.tp ? 'TP (выше)' : (p.sl ? 'SL (ниже)' : '-');
-        const chance = p.tpChance !== null ? p.tpChance + '%' : (p.slChance !== null ? p.slChance + '%' : '-');
+        const isFutures = p.kind === 'futures';
+
+        const symbolCell = isFutures
+          ? `${p.symbol} <span class="pos-side pos-side-${p.side === 'SHORT' ? 'short' : 'long'}">${p.side}${p.leverage ? ' x' + p.leverage : ''}</span>`
+          : p.symbol;
+
+        let tpslCell = '-';
+        if (p.tp != null && p.sl != null) {
+          tpslCell = `TP $${p.tp.toFixed(2)} / SL $${p.sl.toFixed(2)}`;
+        } else if (p.tp != null) {
+          tpslCell = `TP $${p.tp.toFixed(2)}`;
+        } else if (p.sl != null) {
+          tpslCell = `SL $${p.sl.toFixed(2)}`;
+        }
+
+        let typeCell;
+        if (isFutures) {
+          typeCell = 'Фьючерс';
+        } else {
+          typeCell = p.tp ? 'TP (выше)' : (p.sl ? 'SL (ниже)' : 'Спот');
+        }
+
+        const chanceCell = p.tpChance != null
+          ? p.tpChance + '%'
+          : (p.slChance != null ? p.slChance + '%' : '-');
+
+        let valueCell = `$${(p.value || 0).toFixed(2)}`;
+        if (isFutures && Number.isFinite(p.unrealisedPnl)) {
+          const sign = p.unrealisedPnl >= 0 ? '+' : '';
+          const cls = p.unrealisedPnl >= 0 ? 'pnl-up' : 'pnl-down';
+          valueCell += ` <small class="${cls}">${sign}$${p.unrealisedPnl.toFixed(2)}</small>`;
+        }
+
+        const qtyDisplay = Number.isFinite(p.qty) ? p.qty.toFixed(4) : (p.qty || '-');
+
         return `
         <tr>
-          <td>${p.symbol}</td>
-          <td>${p.qty.toFixed(4)}</td>
+          <td>${symbolCell}</td>
+          <td>${qtyDisplay}</td>
           <td>$${p.avgPrice.toFixed(2)}</td>
           <td>$${p.currentPrice.toFixed(2)}</td>
-          <td>${price !== '-' ? '$' + price.toFixed(2) : '-'}</td>
-          <td>${type}</td>
-          <td>${chance}</td>
-          <td>$${p.value.toFixed(2)}</td>
+          <td>${tpslCell}</td>
+          <td>${typeCell}</td>
+          <td>${chanceCell}</td>
+          <td>${valueCell}</td>
         </tr>
       `}).join('');
     } else {
-      positionsBody.innerHTML = '<tr><td colspan="8">Нет открытых позиций > $1</td></tr>';
+      positionsBody.innerHTML = '<tr><td colspan="8">Нет открытых позиций</td></tr>';
     }
     
     if (a.positions && a.positions.length > 0) {

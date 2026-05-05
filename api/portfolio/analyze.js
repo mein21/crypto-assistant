@@ -10,6 +10,7 @@ const {
     getAllCoins,
     getOpenOrders,
     getOrderHistory,
+    getFuturesPositions,
     getWorkerOverrides,
     setCors,
     errorPayload
@@ -66,12 +67,16 @@ module.exports = async (req, res) => {
         const t0 = Date.now();
 
         const opts = getWorkerOverrides(req);
-        const [rawBalance, coins, prices, openOrders, orderHistory] = await Promise.all([
+        const [rawBalance, coins, prices, openOrders, orderHistory, futuresPositions] = await Promise.all([
             getUSDTBalance(opts).catch(() => 0),
             getAllCoins(opts).catch(() => ({})),
             fetchPrices(SUPPORTED),
             getOpenOrders('linear', opts).catch(() => []),
-            getOrderHistory('linear', 100, opts).catch(() => [])
+            getOrderHistory('linear', 100, opts).catch(() => []),
+            getFuturesPositions(opts).catch((e) => {
+                console.warn('[portfolio/analyze] getFuturesPositions failed:', e.message);
+                return [];
+            })
         ]);
         console.log(`[portfolio/analyze] bybit+prices fetched in ${Date.now() - t0}ms`);
 
@@ -84,14 +89,32 @@ module.exports = async (req, res) => {
             });
         const filtered = assets.filter(a => a.value >= 1);
 
+        // Pull live prices for any futures-only symbols not in the SUPPORTED set,
+        // so indicator/prompt formatting has accurate values for them too.
+        const futuresSymbols = futuresPositions.map(p => p.symbol);
+        const missingPriceSymbols = futuresSymbols.filter(s => !prices[s]);
+        if (missingPriceSymbols.length) {
+            try {
+                const more = await fetchPrices(missingPriceSymbols);
+                Object.assign(prices, more);
+            } catch (e) {
+                console.warn('[portfolio/analyze] fetchPrices(extra) failed:', e.message);
+            }
+        }
+
+        // Compute indicators for every coin we hold (spot or futures), deduped.
+        const indicatorTargets = new Set();
+        filtered.forEach(a => indicatorTargets.add(`${a.coin}USDT`));
+        futuresSymbols.forEach(s => indicatorTargets.add(s));
+
         const t1 = Date.now();
         const indicatorsMap = {};
-        await Promise.all(filtered.map(async (a) => {
-            const symbol = `${a.coin}USDT`;
+        await Promise.all([...indicatorTargets].map(async (symbol) => {
+            const coin = symbol.replace(/USDT$/, '');
             try {
                 const candles = await fetchCandles(symbol, '1h', 100);
                 const bundle = buildIndicatorBundle(candles);
-                if (bundle) indicatorsMap[a.coin] = bundle;
+                if (bundle) indicatorsMap[coin] = bundle;
             } catch (e) {
                 console.warn(`[portfolio/analyze] indicators ${symbol} failed:`, e.message);
             }
@@ -103,7 +126,7 @@ module.exports = async (req, res) => {
         );
         const filledBuys = orderHistory.filter(o => o.orderStatus === 'Filled' && o.side === 'Buy');
 
-        const openPositions = filtered.map(a => {
+        const spotPositions = filtered.map(a => {
             const symbol = `${a.coin}USDT`;
             const tpOrder = tpslOrders.find(o => o.symbol === symbol && o.side === 'Sell');
             const buys = filledBuys.filter(o => o.symbol === symbol);
@@ -135,7 +158,9 @@ module.exports = async (req, res) => {
             }
 
             return {
+                kind: 'spot',
                 symbol: a.coin,
+                pair: symbol,
                 qty: a.qty,
                 avgPrice,
                 currentPrice: a.price,
@@ -148,18 +173,59 @@ module.exports = async (req, res) => {
             };
         });
 
-        const totalValue = filtered.reduce((s, a) => s + a.value, 0);
-        const activeBalance = rawBalance + totalValue;
+        const futuresOpenPositions = futuresPositions.map(p => {
+            const coin = p.symbol.replace(/USDT$/, '');
+            const livePrice = prices[p.symbol] || p.markPrice || 0;
+            return {
+                kind: 'futures',
+                symbol: coin,
+                pair: p.symbol,
+                side: p.side,
+                leverage: p.leverage,
+                qty: p.size,
+                avgPrice: p.avgPrice,
+                currentPrice: livePrice,
+                markPrice: p.markPrice,
+                value: p.positionValue,
+                unrealisedPnl: p.unrealisedPnl,
+                liqPrice: p.liqPrice,
+                tp: p.takeProfit,
+                sl: p.stopLoss,
+                tpChance: null,
+                slChance: null
+            };
+        });
 
-        const positionLines = openPositions.length
-            ? openPositions.map(p => {
+        const openPositions = [...spotPositions, ...futuresOpenPositions];
+
+        const spotValue = spotPositions.reduce((s, p) => s + (p.value || 0), 0);
+        const futuresUnrealised = futuresOpenPositions.reduce((s, p) => s + (p.unrealisedPnl || 0), 0);
+        const futuresNotional = futuresOpenPositions.reduce((s, p) => s + (p.value || 0), 0);
+        const activeBalance = rawBalance + spotValue + futuresUnrealised;
+
+        const spotLines = spotPositions.length
+            ? spotPositions.map(p => {
                 let info = '';
                 if (p.tp) info = `TP: $${p.tp} (шанс ${p.tpChance}%)`;
                 else if (p.sl) info = `SL: $${p.sl} (шанс ${p.slChance}%)`;
                 else info = 'TP/SL не установлены';
                 return `- ${p.symbol}: ${p.qty.toFixed(4)} @ avg $${p.avgPrice.toFixed(4)}, текущая $${p.currentPrice.toFixed(4)}, ${info}`;
             }).join('\n')
-            : 'Нет открытых позиций';
+            : 'Нет открытых спотовых позиций';
+
+        const futuresLines = futuresOpenPositions.length
+            ? futuresOpenPositions.map(p => {
+                const lev = p.leverage ? `${p.leverage}x` : 'плечо?';
+                const tpPart = p.tp ? `TP $${p.tp}` : 'TP не задан';
+                const slPart = p.sl ? `SL $${p.sl}` : 'SL не задан';
+                const liqPart = p.liqPrice ? `, ликв. $${p.liqPrice}` : '';
+                const pnlSign = p.unrealisedPnl >= 0 ? '+' : '';
+                const pnlPart = Number.isFinite(p.unrealisedPnl)
+                    ? `, нереал. PnL ${pnlSign}$${p.unrealisedPnl.toFixed(2)}`
+                    : '';
+                return `- ${p.symbol} ${p.side} ${lev}: ${p.qty} @ avg $${p.avgPrice}, mark $${p.markPrice} (notional $${p.value.toFixed(2)})${pnlPart}, ${tpPart}, ${slPart}${liqPart}`;
+            }).join('\n')
+            : 'Нет открытых фьючерсных позиций';
 
         const indicatorLines = Object.entries(indicatorsMap)
             .map(([coin, bundle]) => {
@@ -169,16 +235,22 @@ module.exports = async (req, res) => {
 
         const prompt = `Ты профессиональный криптотрейдер. Проанализируй мой портфель на основе нескольких индикаторов и текущих цен. Отвечай ТОЛЬКО на русском языке.
 
-Активный баланс (USDT + позиции > $1): $${activeBalance.toFixed(2)}
+Активный баланс (USDT + спот-позиции > $1 + нереал. PnL фьючерсов): $${activeBalance.toFixed(2)}
 Свободные USDT: $${rawBalance.toFixed(2)}
+Открытая фьючерсная экспозиция (notional): $${futuresNotional.toFixed(2)}, нереал. PnL: ${futuresUnrealised >= 0 ? '+' : ''}$${futuresUnrealised.toFixed(2)}
 
 Технические индикаторы по моим монетам (1h timeframe) — RSI, MACD, EMA20/EMA50, Bollinger Bands (с %B), Stochastic %K, ATR, тренд, поддержка/сопротивление + история последних 8 свечей (close, ΔPрice, RSI, MACD_hist):
 ${indicatorLines}
 
 Опирайся на согласование минимум 3 индикаторов (например, RSI + MACD + EMA-кросс, либо Bollinger + Stoch + ATR), а не на один RSI. Учитывай динамику последних 8 свечей: импульс цены, изменение RSI и MACD-гистограммы, возможные дивергенции — а не только мгновенные значения.
 
-Открытые позиции:
-${positionLines}
+Открытые спотовые позиции:
+${spotLines}
+
+Открытые фьючерсные позиции (USDT-perp, сторона LONG/SHORT, плечо, нереал. PnL, TP/SL и цена ликвидации указаны):
+${futuresLines}
+
+Учитывай ОБЕ части портфеля при оценке. Для фьючерсов отдельно прокомментируй сторону позиции (нет ли противоречия с трендом по индикаторам), уровень плеча и риск ликвидации, дай рекомендацию по TP/SL с учётом направления (для SHORT TP < entry, SL > entry; для LONG наоборот).
 
 Верни строгий JSON и НИЧЕГО кроме него:
 {
@@ -188,7 +260,7 @@ ${positionLines}
   "suggestions": "общие рекомендации 1-2 предложения",
   "tpRecommendations": "общая стратегия по TP/SL 1-2 предложения",
   "positions": [
-    { "symbol": "BTC", "tp": 95000, "sl": 78000, "tpReason": "почему такой TP", "slReason": "почему такой SL" }
+    { "symbol": "BTC", "kind": "spot" | "futures", "side": "LONG" | "SHORT", "tp": 95000, "sl": 78000, "tpReason": "почему такой TP", "slReason": "почему такой SL" }
   ]
 }`;
 
@@ -202,11 +274,19 @@ ${positionLines}
                 success: false,
                 error: 'AI вернул некорректный анализ',
                 raw: aiContent,
-                openPositions
+                openPositions,
+                spotPositions,
+                futuresPositions: futuresOpenPositions
             });
         }
 
-        return res.status(200).json({ success: true, analysis, openPositions });
+        return res.status(200).json({
+            success: true,
+            analysis,
+            openPositions,
+            spotPositions,
+            futuresPositions: futuresOpenPositions
+        });
     } catch (e) {
         console.error('portfolio/analyze error:', e.message);
         return res.status(200).json(errorPayload(e));

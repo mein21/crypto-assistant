@@ -1109,6 +1109,21 @@ svg { display: block; }
 .table tbody tr.short > td:first-child { color: var(--loss); }
 .table tbody tr.long  { box-shadow: inset 3px 0 0 var(--accent-emerald); }
 .table tbody tr.short { box-shadow: inset 3px 0 0 var(--loss); }
+
+.pos-side {
+    display: inline-block;
+    padding: 1px 6px;
+    margin-left: 6px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    vertical-align: middle;
+}
+.pos-side-long  { background: rgba(46, 204, 113, 0.15); color: var(--accent-emerald); }
+.pos-side-short { background: rgba(255, 99, 99, 0.15);  color: var(--loss); }
+.pnl-up   { color: var(--accent-emerald); font-weight: 700; }
+.pnl-down { color: var(--loss); font-weight: 700; }
 .table tbody tr > td:nth-child(7) { color: var(--brand-cyan); font-weight: 700; }
 .table tbody tr > td:nth-child(8) {
     white-space: normal;
