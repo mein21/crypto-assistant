@@ -986,6 +986,20 @@ async function executeTrade() {
             return;
         }
 
+        // Refuse if AI's TP is closer to entry than the round-trip taker fee
+        // (0.11%) — hitting it would give a guaranteed net loss. Use the
+        // actual entry price the order will be placed at (limit price for
+        // limit orders; AI-recommended entry for market orders).
+        const entryRef = price || currentTrade.entryPrice;
+        const tpCheck = validateTpAgainstFees(entryRef, currentTrade.tp, currentTrade.direction);
+        if (tpCheck) {
+            statusValueEl.textContent = '❌ ' + tpCheck.message;
+            statusValueEl.className = 'status-value error';
+            btn.disabled = false;
+            btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg> Выставить';
+            return;
+        }
+
         // Defence in depth: even if the cached usdtAmount was sized correctly
         // when AI recommended, the user may have opened other positions in the
         // meantime which ate into available margin. Re-check just before sending
@@ -1412,6 +1426,35 @@ function snapQtyToStep(qty, info) {
     return parseFloat(rounded.toFixed(decimals));
 }
 
+// Bybit USDT-perp taker fee is 0.055% per side. A round-trip (entry taker +
+// TP taker, since our TP fires as Market via tpOrderType:'Market') costs
+// ~0.11% of notional. If the AI proposes a TP closer to entry than that,
+// hitting it gives a guaranteed net loss after fees. User explicitly asked
+// to refuse such orders rather than bumping the TP. Maker entries pay 0.02%
+// + 0.055% taker exit = 0.075%, but we use the stricter 0.11% taker floor
+// so the trade is profitable even if our limit entry crosses the spread.
+const BYBIT_TAKER_FEE_PCT = 0.055;
+const ROUND_TRIP_FEE_PCT  = BYBIT_TAKER_FEE_PCT * 2; // 0.11%
+
+function validateTpAgainstFees(entry, tp, direction) {
+    if (!entry || !tp) return null; // optional TP — nothing to validate
+    if (direction !== 'LONG' && direction !== 'SHORT') return null;
+    const profitPct = direction === 'LONG'
+        ? (tp - entry) / entry * 100
+        : (entry - tp) / entry * 100;
+    if (profitPct <= ROUND_TRIP_FEE_PCT) {
+        const profitStr = profitPct >= 0
+            ? `+${profitPct.toFixed(3)}%`
+            : `${profitPct.toFixed(3)}% (TP в неправильную сторону)`;
+        return {
+            code: 'TP_BELOW_FEE',
+            message: `AI поставил TP $${tp} — это ${profitStr} от входа $${entry}, ` +
+                     `а round-trip taker fee 0.11%. После комиссии — убыток. Ордер не выставляю.`
+        };
+    }
+    return null;
+}
+
 // Returns null if (qty, price, info) make a valid order; otherwise an
 // error object { code, message } we can show to the user. Centralises the
 // "your $6 won't fit BTC's 0.001 step" check so we never call /api/execute
@@ -1550,6 +1593,13 @@ async function executePairOrder(index) {
         const preflight = validateOrderAgainstInstrument(qty, pair.entryPrice, instrument);
         if (preflight) {
             alert(`По ${pair.pair}: ${preflight.message}`);
+            return;
+        }
+
+        // Refuse if AI's TP can't cover the round-trip taker fee.
+        const tpCheck = validateTpAgainstFees(pair.entryPrice, pair.tp, pair.direction);
+        if (tpCheck) {
+            alert(`По ${pair.pair}: ${tpCheck.message}`);
             return;
         }
 
