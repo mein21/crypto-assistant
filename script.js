@@ -970,8 +970,6 @@ async function executeTrade() {
             qty = snapQtyToStep(currentTrade.positionSize, instrument);
         } else if (currentTrade.orderType === 'market') {
             const usd = currentTrade.usdtAmount || 10;
-            // Without a known price for market orders we can't snap to step
-            // ahead of time — backend re-snaps on placement using mark price.
             if (price) {
                 const choice = chooseTradeQty(usd, price, instrument);
                 qty = choice.qty;
@@ -980,12 +978,59 @@ async function executeTrade() {
                     currentTrade.usdtAmount = choice.usdt;
                 }
             } else {
-                qty = parseFloat(usd.toFixed(4));
+                statusValueEl.textContent = '❌ Нет цены для расчёта количества. Используй лимитный ордер или запусти анализ заново.';
+                statusValueEl.className = 'status-value error';
+                btn.disabled = false;
+                btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg> Выставить';
+                return;
             }
         } else {
-            alert('Укажите сумму в USDT');
-            btn.disabled = false;
-            return;
+            if (isBybitEnabled() && price) {
+                try {
+                    const balResp = await fetch('/api/balance', bybitFetchOptions());
+                    const balData = await balResp.json();
+                    if (!balData || !balData.success) {
+                        statusValueEl.textContent = '❌ Не удалось получить баланс' + (balData?.error ? `: ${balData.error}` : '');
+                        statusValueEl.className = 'status-value error';
+                        btn.disabled = false;
+                        btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg> Выставить';
+                        return;
+                    }
+                    const autoPlan = planOrderUsdt(balData);
+                    if (autoPlan.equity <= 0) {
+                        statusValueEl.textContent = '❌ Bybit вернул нулевой баланс. Проверь, что прокси подключён к нужному счёту.';
+                        statusValueEl.className = 'status-value error';
+                        btn.disabled = false;
+                        btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg> Выставить';
+                        return;
+                    }
+                    if (autoPlan.usdtAmount <= 0) {
+                        statusValueEl.textContent = `❌ Свободного маржинального баланса нет (free margin $${autoPlan.available.toFixed(2)})`;
+                        statusValueEl.className = 'status-value error';
+                        btn.disabled = false;
+                        btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg> Выставить';
+                        return;
+                    }
+                    currentTrade.usdtAmount = autoPlan.usdtAmount;
+                    const autoChoice = chooseTradeQty(autoPlan.usdtAmount, price, instrument);
+                    qty = autoChoice.qty;
+                    if (autoChoice.bumped) {
+                        bumpNotice = `Сумма поднята с $${autoPlan.usdtAmount.toFixed(2)} до $${autoChoice.usdt.toFixed(2)} (минимум биржи $5).`;
+                        currentTrade.usdtAmount = autoChoice.usdt;
+                    }
+                } catch (e) {
+                    statusValueEl.textContent = '❌ ' + e.message;
+                    statusValueEl.className = 'status-value error';
+                    btn.disabled = false;
+                    btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg> Выставить';
+                    return;
+                }
+            } else {
+                alert('Укажите сумму в USDT или включите Bybit для автоматического расчёта.');
+                btn.disabled = false;
+                btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg> Выставить';
+                return;
+            }
         }
 
         if (!qty || qty <= 0) {
@@ -1301,12 +1346,23 @@ async function applyManualInput() {
 
     currentTrade.usdtAmount = usdt;
     currentTrade.orderType = orderType;
-    currentTrade.entryPrice = orderType === 'market' ? null : price;
+    if (orderType !== 'market') {
+        currentTrade.entryPrice = price;
+    }
 
     document.getElementById('positionInfo').textContent = '$' + usdt.toFixed(2);
     document.getElementById('priceInfo').textContent = price ? '$' + price.toLocaleString() : 'Рыночная';
 
     hideAllInputs();
+
+    const executeBtn = document.getElementById('executeBtn');
+    if (executeBtn) {
+        executeBtn.disabled = false;
+        executeBtn.style.display = '';
+        executeBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg> Выставить';
+    }
+    statusValueEl.textContent = 'Готово к исполнению';
+    statusValueEl.className = 'status-value ready';
 }
 
 function markFieldError(input, message) {
