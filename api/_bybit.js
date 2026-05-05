@@ -202,7 +202,113 @@ function roundOrderPrice(symbol, price) {
     return parseFloat(n.toFixed(d));
 }
 
+// Instrument-info cache. Bybit's /v5/market/instruments-info returns
+// qtyStep/minOrderQty/minOrderAmt for each symbol, which we need to round
+// quantities correctly and reject orders the exchange would reject anyway
+// with a confusing 10001 ("contracts exceeds minimum"). Cache for 1h —
+// these fields almost never change, but we don't want a stale cache forever
+// in case Bybit relists a contract with new tick rules.
+const INSTRUMENT_TTL_MS = 60 * 60 * 1000;
+const instrumentCache = new Map(); // symbol -> { info, expires }
+
+function decimalsFromStep(step) {
+    if (!Number.isFinite(step) || step <= 0) return 0;
+    if (step >= 1) return 0;
+    // 0.001 -> "0.001" -> 3
+    const s = step.toString();
+    const dot = s.indexOf('.');
+    return dot === -1 ? 0 : (s.length - dot - 1);
+}
+
+async function getInstrumentInfo(symbol, opts = {}) {
+    const now = Date.now();
+    const cached = instrumentCache.get(symbol);
+    if (cached && cached.expires > now) return cached.info;
+
+    const data = await callBybit(
+        '/v5/market/instruments-info',
+        'GET',
+        { category: 'linear', symbol },
+        opts
+    );
+    const item = data.result?.list?.[0];
+    if (!item) {
+        const err = new Error(`Bybit не знает символ ${symbol}`);
+        err.code = 'INSTRUMENT_UNKNOWN';
+        throw err;
+    }
+    const lot = item.lotSizeFilter || {};
+    const priceF = item.priceFilter || {};
+    const qtyStep = parseFloat(lot.qtyStep) || 0;
+    const minOrderQty = parseFloat(lot.minOrderQty) || 0;
+    // `minNotionalValue` is Bybit V5's min order amount in quote (USDT). Some
+    // symbols only have it on the lot filter as `minOrderAmt`. Fall back
+    // to a hardcoded $5 (Bybit's default for most USDT-perp pairs) so we
+    // never hand the user "no minimum" and silently let the exchange reject.
+    const minOrderAmt = parseFloat(lot.minNotionalValue ?? lot.minOrderAmt) || 5;
+    const tickSize = parseFloat(priceF.tickSize) || 0;
+    const info = {
+        symbol,
+        qtyStep,
+        qtyDecimals: decimalsFromStep(qtyStep),
+        minOrderQty,
+        minOrderAmt,
+        tickSize,
+        priceDecimals: decimalsFromStep(tickSize)
+    };
+    instrumentCache.set(symbol, { info, expires: now + INSTRUMENT_TTL_MS });
+    return info;
+}
+
+function roundQtyDown(qty, step) {
+    if (!Number.isFinite(qty) || qty <= 0) return 0;
+    if (!Number.isFinite(step) || step <= 0) return qty;
+    // Use a scaled integer division to dodge fp drift like 0.1+0.2 != 0.3.
+    const scale = Math.pow(10, decimalsFromStep(step));
+    const stepInt = Math.round(step * scale);
+    const qtyInt  = Math.floor(qty * scale);
+    const rounded = (qtyInt - (qtyInt % stepInt)) / scale;
+    return parseFloat(rounded.toFixed(decimalsFromStep(step)));
+}
+
 async function placeFuturesOrder(symbol, side, qty, price = null, tp = null, sl = null, opts = {}) {
+    // Snap qty to the symbol's lotSizeFilter rules and reject upfront if the
+    // request would never make it past Bybit's contract filters. Catches
+    // 10001 ("contracts exceeds minimum") and "qty has too many decimals"
+    // before we waste a round-trip and a retCode toast on the user.
+    let info;
+    try { info = await getInstrumentInfo(symbol, opts); }
+    catch (_) { info = null; /* fall back to no-op rounding */ }
+
+    let finalQty = Number(qty);
+    if (info && info.qtyStep > 0) {
+        finalQty = roundQtyDown(finalQty, info.qtyStep);
+        if (finalQty < info.minOrderQty) {
+            const refPrice = price ? Number(price) : null;
+            const minNotional = refPrice && refPrice > 0
+                ? Math.max(info.minOrderQty * refPrice, info.minOrderAmt)
+                : info.minOrderAmt;
+            const err = new Error(
+                `Минимум для ${symbol} — ${info.minOrderQty} (≈$${minNotional.toFixed(2)}). ` +
+                `Запрошенное qty ${qty} меньше шага лота.`
+            );
+            err.code = 'QTY_BELOW_MIN';
+            err.payload = { qty, minOrderQty: info.minOrderQty, qtyStep: info.qtyStep };
+            throw err;
+        }
+        if (price) {
+            const notional = finalQty * Number(price);
+            if (notional < info.minOrderAmt) {
+                const err = new Error(
+                    `Сумма ордера $${notional.toFixed(2)} меньше минимума ${symbol} ($${info.minOrderAmt}).`
+                );
+                err.code = 'NOTIONAL_BELOW_MIN';
+                err.payload = { notional, minOrderAmt: info.minOrderAmt };
+                throw err;
+            }
+        }
+    }
+
     const roundedPrice = roundOrderPrice(symbol, price);
     const roundedTp = roundOrderPrice(symbol, tp);
     const roundedSl = roundOrderPrice(symbol, sl);
@@ -212,7 +318,7 @@ async function placeFuturesOrder(symbol, side, qty, price = null, tp = null, sl 
         symbol,
         side,
         orderType: roundedPrice ? 'Limit' : 'Market',
-        qty: String(qty),
+        qty: String(finalQty),
         timeInForce: 'GTC'
     };
     if (roundedPrice) params.price = String(roundedPrice);
@@ -265,6 +371,8 @@ module.exports = {
     getFuturesPositions,
     cancelOrder,
     placeFuturesOrder,
+    getInstrumentInfo,
+    roundQtyDown,
     getWorkerOverrides,
     setCors,
     errorPayload
