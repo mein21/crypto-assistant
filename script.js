@@ -1000,15 +1000,30 @@ function applyManualInput() {
 
 // Compute an order size in USDT that:
 //   1. aims for ~10% of the user's USDT walletBalance (their "ideal risk slice"),
-//   2. but never exceeds 95% of free margin (`availableToWithdraw`) — the 5%
-//      cushion absorbs taker fees + price slippage between sizing and fill.
+//   2. but never exceeds 95% of free margin — the 5% cushion absorbs taker
+//      fees + price slippage between sizing and fill.
 // Without the second cap Bybit rejects the order with `110007 ab not enough`
 // when the account already has open positions consuming most of its margin.
+//
+// "Free margin" on Bybit V5 UTA isn't a single field — we have to look at two:
+//   - `totalAvailableBalance` (account-level USD across all coins, the real
+//     "free balance for placing new orders" on UTA)
+//   - per-USDT-coin `availableToWithdraw` (only what can be withdrawn off-
+//     exchange — often 0 on UTA even when there's plenty for trading)
+// We take the larger of the two so neither field's restrictiveness traps us
+// into reporting "available 0" when Bybit itself would happily accept the
+// order.
+function freeMarginFromBalance(d) {
+    const totalAvail   = parseFloat(d?.totalAvailableBalance) || 0;
+    const usdtWithdraw = parseFloat(d?.available) || 0;
+    return Math.max(totalAvail, usdtWithdraw);
+}
+
 function planOrderUsdt(d) {
     const wallet    = parseFloat(d?.balance ?? d?.wallet) || 0;
-    const available = parseFloat(d?.available) || 0;
+    const available = freeMarginFromBalance(d);
     const ideal = wallet * 0.1;
-    // If the proxy didn't return availableToWithdraw (older response shapes),
+    // If the proxy returned neither availability field (older response shapes),
     // fall back to the wallet-based slice so we don't accidentally size to 0.
     const cap   = available > 0 ? available * 0.95 : ideal;
     const usdt  = Math.max(0, Math.min(ideal, cap));
