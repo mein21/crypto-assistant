@@ -172,10 +172,10 @@ module.exports = async (req, res) => {
 Активный баланс (USDT + позиции > $1): $${activeBalance.toFixed(2)}
 Свободные USDT: $${rawBalance.toFixed(2)}
 
-Технические индикаторы по моим монетам (1h timeframe) — RSI, MACD, EMA20/EMA50, Bollinger Bands (с %B), Stochastic %K, ATR, тренд, поддержка/сопротивление:
+Технические индикаторы по моим монетам (1h timeframe) — RSI, MACD, EMA20/EMA50, Bollinger Bands (с %B), Stochastic %K, ATR, тренд, поддержка/сопротивление + история последних 8 свечей (close, ΔPрice, RSI, MACD_hist):
 ${indicatorLines}
 
-Опирайся на согласование минимум 3 индикаторов (например, RSI + MACD + EMA-кросс, либо Bollinger + Stoch + ATR), а не на один RSI.
+Опирайся на согласование минимум 3 индикаторов (например, RSI + MACD + EMA-кросс, либо Bollinger + Stoch + ATR), а не на один RSI. Учитывай динамику последних 8 свечей: импульс цены, изменение RSI и MACD-гистограммы, возможные дивергенции — а не только мгновенные значения.
 
 Открытые позиции:
 ${positionLines}
