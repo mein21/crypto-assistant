@@ -19,7 +19,18 @@ const SUPPORTED_SYMBOLS = new Set([
     'ADAUSDT', 'DOGEUSDT', 'DOTUSDT', 'AVAXUSDT',
     'LTCUSDT', 'LINKUSDT', 'MATICUSDT'
 ]);
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'openai/gpt-oss-120b:free';
+// /api/portfolio asks for FIVE trades, so it generates ~5x the output tokens
+// of /api/analyze. The default `gpt-oss-120b:free` runs at ~21 tok/s on the
+// free provider — that overshoots Vercel's 60s function timeout reliably.
+// Use the smaller-but-much-faster sibling (gpt-oss-20b:free, 21B params, MoE)
+// unless the operator explicitly sets OPENROUTER_PORTFOLIO_MODEL.
+const OPENROUTER_MODEL =
+    process.env.OPENROUTER_PORTFOLIO_MODEL ||
+    'openai/gpt-oss-20b:free';
+// Hard ceiling on the OpenRouter call. Anything slower returns a clean
+// error to the client instead of hanging until Vercel kills the function
+// with a 504 FUNCTION_INVOCATION_TIMEOUT.
+const OPENROUTER_TIMEOUT_MS = 50_000;
 
 // Read POST body — Vercel/Node populates `req.body` for JSON requests, but
 // some adapters (Cloudflare Pages, custom Express) leave it as a stream, so
@@ -86,70 +97,69 @@ function buildPrompt(prices, indicators, news) {
 
     const newsBlock = formatNewsBlock(news, Object.keys(prices));
     const newsSection = newsBlock
-        ? `\nНовостной фон (последние 24ч, ★ — пара из текущего набора):\n${newsBlock}\n`
-        : '\nНовостной фон: данных нет.\n';
+        ? `\nНовости (★ — пара из набора):\n${newsBlock}\n`
+        : '';
 
     const upcoming = formatUpcomingHints();
 
-    return `Ты профессиональный криптотрейдер. Выбери 5 лучших сделок на основе данных ниже и верни их строго в виде JSON-массива.
+    return `Ты профессиональный криптотрейдер. Дай 5 лучших сделок строго JSON-массивом.
 
-Текущие цены:
+Цены:
 ${priceLines}
 
-Технические индикаторы (1h timeframe) — RSI, MACD, EMA20/EMA50, Bollinger Bands (с %B), Stochastic %K/%D, ATR, тренд, поддержка/сопротивление + история последних 8 свечей (close, ΔPрice, RSI, MACD_hist):
+Индикаторы (1h: RSI, MACD, EMA20/50, Bollinger %B, Stoch %K, ATR, тренд, S/R + 8 свечей):
 ${indLines}
 ${newsSection}
-Предстоящие события: ${upcoming}
+Календарь: ${upcoming}
 
-ПРОЦЕДУРА (выполняй строго и детерминированно):
-1. Для каждой пары посчитай "балл сигнала" по шести каналам (LONG=+1, SHORT=-1, нейтр=0): EMA-кросс, MACD-гистограмма, RSI (>55 LONG/<45 SHORT), Stochastic %K, Bollinger %B (>0.7 SHORT bias / <0.3 LONG bias), тренд + динамика последних 8 свечей.
-2. Сортируй пары по |баллу| убыванию. Бери первые 5.
-3. Если |балл| у пары < 2 — выставь direction="HET" с reason="смешанные сигналы". НЕ выдумывай LONG/SHORT там, где сигналы конфликтуют.
-4. Учитывай новостной фон: негатив (взлом, иск SEC) — снижай confidence или HET; позитив (одобрение ETF) — повышай confidence на LONG.
-5. При одинаковых данных давай одинаковый ответ — не "перебирай" пары случайно.
+ПРОЦЕДУРА (детерминированно, при равных данных — равный ответ):
+1) По каждой паре балл = сумма голосов (LONG=+1/SHORT=-1/0) по 6 каналам: EMA-кросс, MACD-гист, RSI (>55 LONG, <45 SHORT), Stoch %K, Bollinger %B (>0.7 SHORT, <0.3 LONG), тренд+8 свечей.
+2) Сортируй по |баллу| убыванию, бери топ-5.
+3) Если |балл|<2 → direction="HET", reason="смешанные сигналы". Не угадывай.
+4) Негатив в новостях (взлом/SEC) → снижай confidence или HET. Позитив (ETF) → +confidence на LONG.
 
-ВАЖНО: запрещено возвращать LONG, если 3+ голосов SHORT, и наоборот. Сомневаешься — это HET.
+JSON-массив из 5:
+[{"pair":"BTCUSDT","direction":"LONG|SHORT|HET","entryPrice":N,"tp":N,"sl":N,"confidence":1-10,"reason":"кратко: балл, индикаторы, новости"}]
 
-Верни строго JSON-массив из 5 элементов, без markdown, без пояснений до или после:
-[
-  {
-    "pair": "BTCUSDT",
-    "direction": "LONG" | "SHORT" | "HET",
-    "entryPrice": 12345.67,
-    "tp": 13000.00,
-    "sl": 12000.00,
-    "confidence": 8,
-    "reason": "Краткое обоснование на русском (балл сигнала, ключевые индикаторы, новости если повлияли)"
-  }
-]
-
-ПРАВИЛА:
-- LONG: TP > entryPrice, SL < entryPrice
-- SHORT: TP < entryPrice, SL > entryPrice
-- TP должен быть как минимум на 0.2% от entryPrice (для LONG: tp >= entryPrice * 1.002; для SHORT: tp <= entryPrice * 0.998). Round-trip taker fee Bybit = 0.11% (0.055% × 2), TP ближе 0.11% от entry — гарантированный убыток после комиссии. 0.2% даёт минимальный профит сверху комиссии.
-- При direction="HET" поля entryPrice/tp/sl можно вернуть null.
-- confidence — целое число от 1 до 10, где 10 — максимальная уверенность.`;
+LONG: TP>entry, SL<entry. SHORT: TP<entry, SL>entry. TP минимум на 0.2% от entry (комиссия Bybit round-trip 0.11%). HET: entry/tp/sl можно null.
+Только JSON, без markdown и комментариев.`;
 }
 
 async function callOpenRouter(prompt, apiKey) {
-    const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-            'Authorization': `Bearer ${apiKey}`,
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-            model: OPENROUTER_MODEL,
-            max_tokens: 2500,
-            // temperature 0 + seed for deterministic output: clicking
-            // "5 пар" twice with the same data should return the same set,
-            // not a random reshuffle.
-            temperature: 0,
-            top_p: 1,
-            seed: 42,
-            messages: [{ role: 'user', content: prompt }]
-        })
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), OPENROUTER_TIMEOUT_MS);
+    let r;
+    try {
+        r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            signal: controller.signal,
+            headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: OPENROUTER_MODEL,
+                // 5 trades with concise reasons ≈ 1200-1400 tokens; 1500 is
+                // a safe ceiling. Was 2500, which let the free-tier model
+                // stretch the response and blow Vercel's 60s timeout.
+                max_tokens: 1500,
+                // temperature 0 + seed for deterministic output: clicking
+                // "5 пар" twice with the same data should return the same
+                // set, not a random reshuffle.
+                temperature: 0,
+                top_p: 1,
+                seed: 42,
+                messages: [{ role: 'user', content: prompt }]
+            })
+        });
+    } catch (e) {
+        clearTimeout(timer);
+        if (e.name === 'AbortError') {
+            throw new Error(`OpenRouter не ответил за ${OPENROUTER_TIMEOUT_MS / 1000}с (модель ${OPENROUTER_MODEL}). Попробуй ещё раз или укажи более быструю модель в переменной OPENROUTER_PORTFOLIO_MODEL (например openai/gpt-oss-20b:free).`);
+        }
+        throw e;
+    }
+    clearTimeout(timer);
 
     const text = await r.text();
     let data;

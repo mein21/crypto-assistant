@@ -20,7 +20,15 @@ const SUPPORTED_SYMBOLS = new Set([
     'ADAUSDT', 'DOGEUSDT', 'DOTUSDT', 'AVAXUSDT',
     'LTCUSDT', 'LINKUSDT', 'MATICUSDT'
 ]);
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'openai/gpt-oss-120b:free';
+// Default switched from `gpt-oss-120b:free` (21 tok/s on the free provider —
+// slow enough to hit Vercel's 60s timeout when the prompt is long) to its
+// smaller MoE sibling `gpt-oss-20b:free` (21B params, ~5x faster). Same
+// JSON-output and instruction-following behaviour for our scoring procedure.
+// Operators can still pin a different model via OPENROUTER_MODEL.
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'openai/gpt-oss-20b:free';
+// Hard ceiling on the OpenRouter call so a slow upstream returns a clean
+// error instead of letting Vercel kill the function with a 504.
+const OPENROUTER_TIMEOUT_MS = 50_000;
 
 // Parse `?symbols=BTCUSDT,ETHUSDT` (case-insensitive, validated against
 // SUPPORTED_SYMBOLS, deduped). Returns DEFAULT_SYMBOLS on empty or invalid
@@ -69,75 +77,69 @@ function buildPrompt(prices, indicators, news) {
 
     const newsBlock = formatNewsBlock(news, Object.keys(prices));
     const newsSection = newsBlock
-        ? `\nНовостной фон (последние 24ч, ★ — пара из текущего набора):\n${newsBlock}\n`
-        : '\nНовостной фон: данных нет (пропусти этот блок в анализе).\n';
+        ? `\nНовости (★ — пара из набора):\n${newsBlock}\n`
+        : '';
 
     const upcoming = formatUpcomingHints();
 
-    return `Ты профессиональный криптотрейдер. Проанализируй рынок по нескольким индикаторам и дай ОДНУ лучшую рекомендацию строго в виде JSON-объекта.
+    return `Ты профессиональный криптотрейдер. Дай ОДНУ лучшую сделку строго JSON.
 
-Текущие цены:
+Цены:
 ${priceLines}
 
-Технические индикаторы (1h timeframe) — RSI, MACD, EMA20/EMA50, Bollinger Bands (с %B), Stochastic %K, ATR, тренд, поддержка/сопротивление + история последних 8 свечей (close, ΔPрice, RSI, MACD_hist):
+Индикаторы (1h: RSI, MACD, EMA20/50, Bollinger %B, Stoch %K, ATR, тренд, S/R + 8 свечей):
 ${indLines}
 ${newsSection}
-Предстоящие события: ${upcoming}
+Календарь: ${upcoming}
 
-ПРОЦЕДУРА ВЫБОРА НАПРАВЛЕНИЯ (выполняй строго по порядку, не пропускай шаги):
-1. Для каждой пары посчитай "балл сигнала" = сумма голосов (LONG=+1, SHORT=-1, нейтрально=0) по шести каналам:
-   • EMA-кросс (EMA20 vs EMA50);
-   • MACD-гистограмма (знак + динамика последних 3 свечей);
-   • RSI (>55 LONG, <45 SHORT, 45-55 нейтрально; учти разворот в истории);
-   • Stochastic %K (>50 + растёт LONG, <50 + падает SHORT);
-   • Bollinger %B (>0.7 перекуп → SHORT bias, <0.3 перепрод → LONG bias, иначе по тренду);
-   • Тренд + последние 8 свечей (3+ зелёных подряд = LONG, 3+ красных = SHORT).
-2. Выбирай пару с МАКСИМАЛЬНЫМ |баллом|. Если у двух пар |балл| равны — бери ту, где ATR% выше (больше волатильности = больше потенциала).
-3. Если |балл| у лучшей пары < 3 ИЛИ голоса распределены 3/3 (сильный конфликт) — верни direction="HET" с reason="смешанные сигналы, ждём подтверждения" и НЕ выдумывай LONG/SHORT.
-4. Учитывай новостной фон: сильный негатив по монете (взлом, иск SEC, делистинг) — снижай confidence или переключайся на HET. Сильный позитив по макро (одобрение ETF, дешёвые деньги) — повышай confidence на LONG.
-5. Будь ДЕТЕРМИНИСТИЧЕН: при одинаковых данных всегда давай одинаковый ответ. Не "перебирай" пары случайно — следуй процедуре.
+ПРОЦЕДУРА (детерминированно, при равных данных — равный ответ):
+1) По каждой паре считай балл = сумма голосов (LONG=+1/SHORT=-1/0) по 6 каналам: EMA-кросс, MACD-гист, RSI (>55 LONG, <45 SHORT), Stoch %K, Bollinger %B (>0.7 SHORT bias, <0.3 LONG bias), тренд+8 свечей.
+2) Бери пару с максимальным |баллом| (ничья → выше ATR%).
+3) Если |балл|<3 или конфликт 3/3 → direction="HET", reason="смешанные сигналы". Не угадывай.
+4) Сильный негатив в новостях (взлом/SEC) → снижай confidence или HET. Сильный позитив (ETF) → +confidence на LONG.
 
-ВАЖНО: запрещено возвращать LONG если 3+ голосов SHORT, и наоборот. Если ты не уверен — это HET, а не угадывание.
+JSON:
+{"pair":"BTCUSDT","direction":"LONG|SHORT|HET","entryPrice":N,"tp":N,"sl":N,"confidence":1-10,"reason":"балл, ключевые индикаторы, новости если повлияли"}
 
-ОТВЕТ — строго JSON со следующими полями:
-{
-  "pair": "BTCUSDT",
-  "direction": "LONG" | "SHORT" | "HET",
-  "entryPrice": 12345.67,
-  "tp": 13000.00,
-  "sl": 12000.00,
-  "confidence": 8,
-  "reason": "Краткое обоснование на русском (укажи итоговый балл сигнала, ключевые индикаторы и упомяни новостной фон, если он повлиял)"
-}
-
-ПРАВИЛА TP/SL:
-- LONG: TP > entryPrice, SL < entryPrice
-- SHORT: TP < entryPrice, SL > entryPrice
-- При direction="HET" entryPrice/tp/sl можно вернуть null.
-
-Верни ТОЛЬКО JSON-объект без markdown-обёртки и без любого текста до или после.`;
+LONG: TP>entry, SL<entry. SHORT: TP<entry, SL>entry. HET: entry/tp/sl можно null.
+Только JSON, без markdown и комментариев.`;
 }
 
 async function callOpenRouter(prompt, apiKey) {
-    const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-            'Authorization': `Bearer ${apiKey}`,
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-            model: OPENROUTER_MODEL,
-            max_tokens: 1500,
-            // temperature 0 makes the model deterministic for identical
-            // input. The user complained that hitting "Best trade" twice
-            // could flip BTC from SHORT to LONG with the same data — that
-            // was 0.2 sampling. seed pins it where the model supports it.
-            temperature: 0,
-            top_p: 1,
-            seed: 42,
-            messages: [{ role: 'user', content: prompt }]
-        })
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), OPENROUTER_TIMEOUT_MS);
+    let r;
+    try {
+        r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            signal: controller.signal,
+            headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: OPENROUTER_MODEL,
+                // Single concise trade fits in <500 tokens; 700 leaves comfortable
+                // headroom but keeps OpenRouter fast.
+                max_tokens: 700,
+                // temperature 0 makes the model deterministic for identical
+                // input. User complained that hitting "Best trade" twice could
+                // flip BTC from SHORT to LONG on the same data — that was 0.2
+                // sampling. seed pins it where the model supports it.
+                temperature: 0,
+                top_p: 1,
+                seed: 42,
+                messages: [{ role: 'user', content: prompt }]
+            })
+        });
+    } catch (e) {
+        clearTimeout(timer);
+        if (e.name === 'AbortError') {
+            throw new Error(`OpenRouter не ответил за ${OPENROUTER_TIMEOUT_MS / 1000}с (модель ${OPENROUTER_MODEL}). Попробуй ещё раз или укажи более быструю модель в переменной OPENROUTER_MODEL (например openai/gpt-oss-20b:free).`);
+        }
+        throw e;
+    }
+    clearTimeout(timer);
 
     const text = await r.text();
     let data;
