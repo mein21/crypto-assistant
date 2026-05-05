@@ -618,9 +618,10 @@ portfolioAnalyzeBtn.addEventListener('click', async () => {
           typeCell = p.tp ? 'TP (выше)' : (p.sl ? 'SL (ниже)' : 'Спот');
         }
 
-        const chanceCell = p.tpChance != null
-          ? p.tpChance + '%'
-          : (p.slChance != null ? p.slChance + '%' : '-');
+        const chanceParts = [];
+        if (p.tpChance != null) chanceParts.push(`TP ${p.tpChance}%`);
+        if (p.slChance != null) chanceParts.push(`SL ${p.slChance}%`);
+        const chanceCell = chanceParts.length ? chanceParts.join(' / ') : '-';
 
         let valueCell = `$${(p.value || 0).toFixed(2)}`;
         if (isFutures && Number.isFinite(p.unrealisedPnl)) {

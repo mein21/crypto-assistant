@@ -5,6 +5,7 @@
 
 const { fetchPrices, fetchCandles } = require('../_marketData');
 const { buildIndicatorBundle, formatIndicatorLine } = require('../../utils/indicatorBundle');
+const { touchChance } = require('../../utils/touchProbability');
 const {
     getUSDTBalance,
     getAllCoins,
@@ -145,17 +146,16 @@ module.exports = async (req, res) => {
                 avgPrice = parseFloat(tpOrder.basePrice) || a.price;
             }
 
-            let tp = null, sl = null, tpChance = null, slChance = null;
+            let tp = null, sl = null;
             const trigger = tpOrder ? parseFloat(tpOrder.triggerPrice) : NaN;
             if (Number.isFinite(trigger) && a.price > 0) {
-                if (trigger > a.price) {
-                    tp = trigger;
-                    tpChance = Math.max(0, Math.round(100 - ((tp - a.price) / a.price) * 100));
-                } else {
-                    sl = trigger;
-                    slChance = Math.max(0, Math.round(100 - ((a.price - sl) / a.price) * 100));
-                }
+                if (trigger > a.price) tp = trigger;
+                else sl = trigger;
             }
+
+            const atr = indicatorsMap[a.coin]?.atr;
+            const tpChance = tp != null ? touchChance(a.price, tp, atr) : null;
+            const slChance = sl != null ? touchChance(a.price, sl, atr) : null;
 
             return {
                 kind: 'spot',
@@ -176,6 +176,7 @@ module.exports = async (req, res) => {
         const futuresOpenPositions = futuresPositions.map(p => {
             const coin = p.symbol.replace(/USDT$/, '');
             const livePrice = prices[p.symbol] || p.markPrice || 0;
+            const atr = indicatorsMap[coin]?.atr;
             return {
                 kind: 'futures',
                 symbol: coin,
@@ -191,8 +192,8 @@ module.exports = async (req, res) => {
                 liqPrice: p.liqPrice,
                 tp: p.takeProfit,
                 sl: p.stopLoss,
-                tpChance: null,
-                slChance: null
+                tpChance: p.takeProfit != null ? touchChance(livePrice, p.takeProfit, atr) : null,
+                slChance: p.stopLoss != null ? touchChance(livePrice, p.stopLoss, atr) : null
             };
         });
 
@@ -216,8 +217,12 @@ module.exports = async (req, res) => {
         const futuresLines = futuresOpenPositions.length
             ? futuresOpenPositions.map(p => {
                 const lev = p.leverage ? `${p.leverage}x` : 'плечо?';
-                const tpPart = p.tp ? `TP $${p.tp}` : 'TP не задан';
-                const slPart = p.sl ? `SL $${p.sl}` : 'SL не задан';
+                const tpPart = p.tp
+                    ? `TP $${p.tp}${p.tpChance != null ? ` (шанс ${p.tpChance}%)` : ''}`
+                    : 'TP не задан';
+                const slPart = p.sl
+                    ? `SL $${p.sl}${p.slChance != null ? ` (шанс ${p.slChance}%)` : ''}`
+                    : 'SL не задан';
                 const liqPart = p.liqPrice ? `, ликв. $${p.liqPrice}` : '';
                 const pnlSign = p.unrealisedPnl >= 0 ? '+' : '';
                 const pnlPart = Number.isFinite(p.unrealisedPnl)
