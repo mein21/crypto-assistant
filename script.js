@@ -1418,16 +1418,17 @@ function snapQtyToStep(qty, info) {
 // for orders Bybit's lotSizeFilter would reject anyway.
 function validateOrderAgainstInstrument(qty, price, info) {
     if (!info) return null; // best-effort; backend will still validate
-    if (!(qty > 0)) {
-        return { code: 'QTY_ZERO', message: 'Количество получилось 0 — увеличьте сумму' };
-    }
-    if (info.minOrderQty > 0 && qty < info.minOrderQty) {
+    // Treat qty<=0 the same as qty<minOrderQty when we know the instrument:
+    // both happen because the user's USDT divided by price snapped below the
+    // contract's qtyStep. The actionable info is the same — show the actual
+    // minimum lot and dollar floor instead of a vague "Количество получилось 0".
+    if (qty <= 0 || (info.minOrderQty > 0 && qty < info.minOrderQty)) {
         const minNotional = price && price > 0
             ? Math.max(info.minOrderQty * price, info.minOrderAmt)
             : info.minOrderAmt;
         return {
             code: 'QTY_BELOW_MIN',
-            message: `Минимум для ${info.symbol} — ${info.minOrderQty} (≈$${minNotional.toFixed(2)}). Увеличь сумму или возьми пару подешевле.`
+            message: `Минимум для ${info.symbol} — ${info.minOrderQty} (≈$${minNotional.toFixed(2)}). Открой пару подешевле (например, DOGEUSDT/ADAUSDT) или увеличь сумму.`
         };
     }
     if (price && price > 0) {
@@ -1474,20 +1475,33 @@ async function useAIRecommendation() {
         console.log('Updated trade:', currentTrade, 'plan:', plan);
 
         // Heads-up if AI's $X is below the symbol's min lot — saves the user
-        // from clicking "Выставить" only to see "минимум для BTCUSDT — 0.001".
-        let belowMinNote = '';
+        // from clicking "Выставить" only to see the same error after a roundtrip.
+        let belowMin = null;
         if (currentTrade.pair && currentTrade.entryPrice) {
             const instr = await getInstrumentInfo(currentTrade.pair.replace('/', ''));
             const sample = snapQtyToStep(plan.usdtAmount / currentTrade.entryPrice, instr);
-            const v = validateOrderAgainstInstrument(sample, currentTrade.entryPrice, instr);
-            if (v) belowMinNote = ' ⚠ ' + v.message;
+            belowMin = validateOrderAgainstInstrument(sample, currentTrade.entryPrice, instr);
         }
 
         const note = plan.wasReduced
             ? ` (урезано c $${plan.ideal.toFixed(2)} — мало free margin)`
             : '';
-        document.getElementById('positionInfo').textContent = '$' + plan.usdtAmount.toFixed(2) + note + belowMinNote;
+        document.getElementById('positionInfo').textContent = '$' + plan.usdtAmount.toFixed(2) + note;
         document.getElementById('priceInfo').textContent = currentTrade.entryPrice ? '$' + currentTrade.entryPrice.toLocaleString() : '--';
+
+        // Surface the min-lot problem prominently in the status row (shared
+        // with "Готово к исполнению") and disable the execute button so the
+        // user understands they can't trade *this* pair on this account size.
+        const executeBtn = document.getElementById('executeBtn');
+        if (belowMin) {
+            statusValueEl.textContent = '⚠ ' + belowMin.message;
+            statusValueEl.className = 'status-value error';
+            if (executeBtn) executeBtn.disabled = true;
+        } else {
+            statusValueEl.textContent = 'Готово к исполнению';
+            statusValueEl.className = 'status-value ready';
+            if (executeBtn) executeBtn.disabled = false;
+        }
     } catch (e) {
         alert('Ошибка получения баланса: ' + e.message);
     }
