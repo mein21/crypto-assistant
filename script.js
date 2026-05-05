@@ -945,22 +945,44 @@ async function executeTrade() {
     try {
         let qty;
         let price = currentTrade.entryPrice;
-        
+        const symbol = currentTrade.pair.replace('/', '');
+
+        // Pull instrument-info first so qty rounding uses the correct step.
+        // Best-effort — if it fails we fall back to toFixed(4) and rely on
+        // backend validation. Cached, so cheap on second click.
+        const instrument = isBybitEnabled() ? await getInstrumentInfo(symbol) : null;
+
         if (currentTrade.usdtAmount && price) {
-            qty = parseFloat((currentTrade.usdtAmount / price).toFixed(4));
+            qty = snapQtyToStep(currentTrade.usdtAmount / price, instrument);
         } else if (currentTrade.positionSize) {
-            qty = currentTrade.positionSize;
+            qty = snapQtyToStep(currentTrade.positionSize, instrument);
         } else if (currentTrade.orderType === 'market') {
-            qty = parseFloat((currentTrade.usdtAmount || 10).toFixed(4));
+            const usd = currentTrade.usdtAmount || 10;
+            // Without a known price for market orders we can't snap to step
+            // ahead of time — backend re-snaps on placement using mark price.
+            qty = price ? snapQtyToStep(usd / price, instrument) : parseFloat(usd.toFixed(4));
         } else {
             alert('Укажите сумму в USDT');
             btn.disabled = false;
             return;
         }
-        
+
         if (!qty || qty <= 0) {
-            alert('Неверное количество');
+            statusValueEl.textContent = '❌ Сумма слишком маленькая для этой пары. Увеличь сумму или возьми пару подешевле.';
+            statusValueEl.className = 'status-value error';
             btn.disabled = false;
+            btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg> Выставить';
+            return;
+        }
+
+        // Pre-flight check qty/notional minimums so we fail fast with a clear
+        // message instead of round-tripping to Bybit and getting back 10001.
+        const preflight = validateOrderAgainstInstrument(qty, price, instrument);
+        if (preflight) {
+            statusValueEl.textContent = '❌ ' + preflight.message;
+            statusValueEl.className = 'status-value error';
+            btn.disabled = false;
+            btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg> Выставить';
             return;
         }
 
@@ -968,6 +990,11 @@ async function executeTrade() {
         // when AI recommended, the user may have opened other positions in the
         // meantime which ate into available margin. Re-check just before sending
         // so we never send an order Bybit will reject with 110007.
+        //
+        // IMPORTANT: only clamp the user's chosen size down to `live.cap` (the
+        // free-margin ceiling). Don't clamp to `live.usdtAmount` — that's the
+        // 10%-of-equity AI default, and a user who manually entered a smaller
+        // OR larger number that still fits free margin should be honoured.
         if (price && currentTrade.usdtAmount && isBybitEnabled()) {
             try {
                 const fr = await fetch('/api/balance', bybitFetchOptions());
@@ -981,18 +1008,26 @@ async function executeTrade() {
                         btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg> Выставить';
                         return;
                     }
-                    if (live.usdtAmount <= 0) {
+                    if (live.cap <= 0) {
                         statusValueEl.textContent = `❌ Свободного маржинального баланса нет (free margin $${live.available.toFixed(2)})`;
                         statusValueEl.className = 'status-value error';
                         btn.disabled = false;
                         btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg> Выставить';
                         return;
                     }
-                    if (live.usdtAmount + 0.01 < currentTrade.usdtAmount) {
-                        const newQty = parseFloat((live.usdtAmount / price).toFixed(4));
-                        console.log(`Sizing reduced just before send: qty ${qty} -> ${newQty} (free margin $${live.available.toFixed(2)})`);
+                    if (live.cap + 0.01 < currentTrade.usdtAmount) {
+                        const newQty = snapQtyToStep(live.cap / price, instrument);
+                        console.log(`Sizing reduced just before send: qty ${qty} -> ${newQty} (cap $${live.cap}, free margin $${live.available.toFixed(2)})`);
+                        const reCheck = validateOrderAgainstInstrument(newQty, price, instrument);
+                        if (reCheck) {
+                            statusValueEl.textContent = '❌ ' + reCheck.message + ` (свободно $${live.cap.toFixed(2)})`;
+                            statusValueEl.className = 'status-value error';
+                            btn.disabled = false;
+                            btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg> Выставить';
+                            return;
+                        }
                         qty = newQty;
-                        currentTrade.usdtAmount = live.usdtAmount;
+                        currentTrade.usdtAmount = live.cap;
                     }
                 }
             } catch (_) { /* network blip — fall through and let Bybit decide */ }
@@ -1080,6 +1115,7 @@ function showManualInput() {
             <button type="button" class="seg-btn is-active" data-type="limit" role="tab" aria-selected="true">Лимит</button>
             <button type="button" class="seg-btn" data-type="market" role="tab" aria-selected="false">Рыночный</button>
         </div>
+        <div class="instrument-min-hint" id="instrumentMinHint" hidden></div>
         <div class="manual-grid">
             <div class="manual-input">
                 <label for="manualQty">Сумма USDT <span class="required" aria-hidden="true">*</span></label>
@@ -1144,9 +1180,27 @@ function showManualInput() {
         setOrderType(btn.dataset.type);
     });
     setOrderType('limit');
+
+    // Async-load instrument-info so the user sees "минимум для BTCUSDT 0.001
+    // (≈$95)" before they type a too-small amount and have it rejected.
+    if (currentTrade?.pair) {
+        const sym = currentTrade.pair.replace('/', '');
+        getInstrumentInfo(sym).then(info => {
+            if (!info) return;
+            const hint = document.getElementById('instrumentMinHint');
+            if (!hint) return;
+            const refPrice = Number.isFinite(currentTrade?.entryPrice) && currentTrade.entryPrice > 0
+                ? currentTrade.entryPrice : null;
+            const minNotional = refPrice
+                ? Math.max(info.minOrderQty * refPrice, info.minOrderAmt)
+                : info.minOrderAmt;
+            hint.textContent = `Минимум для ${info.symbol}: ${info.minOrderQty} (≈$${minNotional.toFixed(2)}) · шаг ${info.qtyStep}`;
+            hint.hidden = false;
+        });
+    }
 }
 
-function applyManualInput() {
+async function applyManualInput() {
     const qtyInput = document.getElementById('manualQty');
     const priceInput = document.getElementById('manualPrice');
     const orderType = document.getElementById('orderTypeToggle')?.dataset?.value || 'limit';
@@ -1161,6 +1215,17 @@ function applyManualInput() {
         markFieldError(qtyInput, `Меньше минимума Bybit ($${BYBIT_MIN_NOTIONAL_USDT}). Биржа отклонит ордер.`);
         qtyInput.focus();
         return;
+    }
+    // Per-symbol minNotional from Bybit's lotSizeFilter — usually $5 but a
+    // few contracts have higher floors. If the cached info isn't available
+    // yet (first render), the global $5 check above is a reasonable fallback.
+    if (currentTrade?.pair) {
+        const instr = await getInstrumentInfo(currentTrade.pair.replace('/', ''));
+        if (instr && instr.minOrderAmt > BYBIT_MIN_NOTIONAL_USDT && usdt < instr.minOrderAmt) {
+            markFieldError(qtyInput, `Меньше минимума ${instr.symbol} ($${instr.minOrderAmt}). Биржа отклонит ордер.`);
+            qtyInput.focus();
+            return;
+        }
     }
     clearFieldError(qtyInput);
 
@@ -1267,11 +1332,14 @@ function effectiveEquityFromBalance(d) {
 }
 
 // Compute order size in USDT:
-//   1. ideal = 10% of effective equity ("risk slice")
-//   2. capped at FREE_MARGIN_CAP_PCT of free margin so we leave headroom for
-//      taker fees (0.055%×2), slippage between sizing and fill, and minor
-//      collateral movement on UTA cross-margin (BTC/USDC value can shift
-//      between balance read and order placement).
+//   1. ideal = 10% of effective equity ("risk slice") — the AI's recommended size
+//   2. cap   = FREE_MARGIN_CAP_PCT of free margin — the absolute upper bound,
+//              with a buffer for taker fees (0.055%×2), slippage between sizing
+//              and fill, and minor collateral movement on UTA cross-margin.
+// `usdtAmount` (= min(ideal, cap)) is the AI default. Manual flow should
+// only respect `cap` — the user picking $6 with $39 free margin is fine
+// even though ideal is $3.9; clamping their manual input down to the
+// 10% slice is a UX bug, not a safety feature.
 // 0.95 was too tight in practice — Bybit kept rejecting orders with
 // `110007 ab not enough` when free margin was small (~$30-40), because the
 // 5% cushion didn't cover combined fee + slippage + IM rounding. 0.85 leaves
@@ -1289,9 +1357,89 @@ function planOrderUsdt(d) {
         usdtAmount: parseFloat(usdt.toFixed(2)),
         wasReduced: usdt + 0.01 < ideal,
         ideal: parseFloat(ideal.toFixed(2)),
+        cap: parseFloat(cap.toFixed(2)),
         equity,
         available
     };
+}
+
+// Per-symbol instrument-info cache (qtyStep / minOrderQty / minOrderAmt).
+// Populated lazily on first use; fetched from /api/instrument-info, which
+// hits Bybit's /v5/market/instruments-info on the backend with an hourly cache.
+const _instrumentCache = new Map();
+async function getInstrumentInfo(symbol) {
+    if (!symbol) return null;
+    const sym = symbol.replace('/', '').toUpperCase();
+    if (_instrumentCache.has(sym)) return _instrumentCache.get(sym);
+    try {
+        const r = await fetch(`/api/instrument-info?symbol=${encodeURIComponent(sym)}`, bybitFetchOptions());
+        const d = await r.json();
+        if (!d || !d.success) return null;
+        const info = {
+            symbol: sym,
+            qtyStep: parseFloat(d.qtyStep) || 0,
+            qtyDecimals: Number.isFinite(d.qtyDecimals) ? d.qtyDecimals : 4,
+            minOrderQty: parseFloat(d.minOrderQty) || 0,
+            minOrderAmt: parseFloat(d.minOrderAmt) || 5
+        };
+        _instrumentCache.set(sym, info);
+        return info;
+    } catch (_) { return null; }
+}
+
+function _stepDecimals(step) {
+    if (!Number.isFinite(step) || step <= 0) return 0;
+    if (step >= 1) return 0;
+    const s = step.toString();
+    const dot = s.indexOf('.');
+    return dot === -1 ? 0 : (s.length - dot - 1);
+}
+
+// Round qty DOWN to the nearest qtyStep. Bybit rejects orders whose qty
+// has more decimals than the contract supports (10001), so we cannot just
+// `toFixed(4)` — the contract may use 0.001 step (BTC) where 0.0001 lands
+// on a non-step value. Falls back to toFixed(4) only if step info missing.
+function snapQtyToStep(qty, info) {
+    if (!Number.isFinite(qty) || qty <= 0) return 0;
+    if (!info || !(info.qtyStep > 0)) {
+        return parseFloat(qty.toFixed(4));
+    }
+    const decimals = _stepDecimals(info.qtyStep);
+    const scale = Math.pow(10, decimals);
+    const stepInt = Math.round(info.qtyStep * scale);
+    const qtyInt  = Math.floor(qty * scale);
+    const rounded = (qtyInt - (qtyInt % stepInt)) / scale;
+    return parseFloat(rounded.toFixed(decimals));
+}
+
+// Returns null if (qty, price, info) make a valid order; otherwise an
+// error object { code, message } we can show to the user. Centralises the
+// "your $6 won't fit BTC's 0.001 step" check so we never call /api/execute
+// for orders Bybit's lotSizeFilter would reject anyway.
+function validateOrderAgainstInstrument(qty, price, info) {
+    if (!info) return null; // best-effort; backend will still validate
+    if (!(qty > 0)) {
+        return { code: 'QTY_ZERO', message: 'Количество получилось 0 — увеличьте сумму' };
+    }
+    if (info.minOrderQty > 0 && qty < info.minOrderQty) {
+        const minNotional = price && price > 0
+            ? Math.max(info.minOrderQty * price, info.minOrderAmt)
+            : info.minOrderAmt;
+        return {
+            code: 'QTY_BELOW_MIN',
+            message: `Минимум для ${info.symbol} — ${info.minOrderQty} (≈$${minNotional.toFixed(2)}). Увеличь сумму или возьми пару подешевле.`
+        };
+    }
+    if (price && price > 0) {
+        const notional = qty * price;
+        if (notional < info.minOrderAmt) {
+            return {
+                code: 'NOTIONAL_BELOW_MIN',
+                message: `Сумма ордера $${notional.toFixed(2)} меньше минимума ${info.symbol} ($${info.minOrderAmt}).`
+            };
+        }
+    }
+    return null;
 }
 
 async function useAIRecommendation() {
@@ -1325,10 +1473,20 @@ async function useAIRecommendation() {
 
         console.log('Updated trade:', currentTrade, 'plan:', plan);
 
+        // Heads-up if AI's $X is below the symbol's min lot — saves the user
+        // from clicking "Выставить" only to see "минимум для BTCUSDT — 0.001".
+        let belowMinNote = '';
+        if (currentTrade.pair && currentTrade.entryPrice) {
+            const instr = await getInstrumentInfo(currentTrade.pair.replace('/', ''));
+            const sample = snapQtyToStep(plan.usdtAmount / currentTrade.entryPrice, instr);
+            const v = validateOrderAgainstInstrument(sample, currentTrade.entryPrice, instr);
+            if (v) belowMinNote = ' ⚠ ' + v.message;
+        }
+
         const note = plan.wasReduced
             ? ` (урезано c $${plan.ideal.toFixed(2)} — мало free margin)`
             : '';
-        document.getElementById('positionInfo').textContent = '$' + plan.usdtAmount.toFixed(2) + note;
+        document.getElementById('positionInfo').textContent = '$' + plan.usdtAmount.toFixed(2) + note + belowMinNote;
         document.getElementById('priceInfo').textContent = currentTrade.entryPrice ? '$' + currentTrade.entryPrice.toLocaleString() : '--';
     } catch (e) {
         alert('Ошибка получения баланса: ' + e.message);
@@ -1372,7 +1530,14 @@ async function executePairOrder(index) {
             console.log(`[${pair.pair}] sizing reduced from $${plan.ideal} to $${usdtAmount} (free margin $${plan.available.toFixed(2)})`);
         }
 
-        const qty = parseFloat((usdtAmount / pair.entryPrice).toFixed(4));
+        const symbol = pair.pair.replace('/', '');
+        const instrument = await getInstrumentInfo(symbol);
+        const qty = snapQtyToStep(usdtAmount / pair.entryPrice, instrument);
+        const preflight = validateOrderAgainstInstrument(qty, pair.entryPrice, instrument);
+        if (preflight) {
+            alert(`По ${pair.pair}: ${preflight.message}`);
+            return;
+        }
 
         const r2 = await fetch('/api/execute', bybitFetchOptions({
             method: 'POST',

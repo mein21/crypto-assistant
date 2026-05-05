@@ -924,6 +924,21 @@ svg { display: block; }
 .manual-input-wrap > button#applyManualBtn:hover { transform: translateY(-1px); }
 .manual-input-wrap > button#applyManualBtn:active { transform: translateY(0) scale(0.97); }
 
+/* Hint above the inputs that shows the symbol's lot-size minimum
+   ("Минимум для BTCUSDT: 0.001 (≈$95) · шаг 0.001"). Hidden until the
+   instrument-info fetch resolves. */
+.instrument-min-hint {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    line-height: 1.35;
+    padding: 4px 8px;
+    background: var(--ink-bg-subtle);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+}
+.instrument-min-hint[hidden] { display: none !important; }
+
 /* Inputs row: 2-column grid on desktop, single column under 540px. */
 .manual-grid {
     display: grid;
