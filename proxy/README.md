@@ -82,6 +82,17 @@ cat tunnel-url.txt        # выйдет через ~10с
 
 Cloudflare quick-tunnel по умолчанию пытается ходить по QUIC (UDP 7844). На многих сетях (домашние роутеры, корп-Wi-Fi, отельный, антивирусы) UDP режется — туннель всё-таки регистрируется, но через пару секунд origin отваливается, и Vercel/UI получает HTTP 530 «origin has been unregistered from Argo Tunnel». Поэтому launcher сразу запускает cloudflared с `--protocol http2` (TCP 443) — это работает везде, где вообще работает HTTPS-трафик.
 
+## Если `systemctl --user` ругается «Failed to connect to user scope bus»
+
+Раньше можно было увидеть `Failed to connect to user scope bus via local transport: $DBUS_SESSION_BUS_ADDRESS and $XDG_RUNTIME_DIR not defined` — это бывает, когда терминал стартует не из графической сессии (SSH, голый zsh, и т.п.) и переменные `XDG_RUNTIME_DIR` / `DBUS_SESSION_BUS_ADDRESS` не наследуются. Сейчас launcher для своих `systemctl --user`-вызовов сам подставляет эти переменные из `/run/user/<uid>`, поэтому отдельно их экспортить не нужно.
+
+Если же при `--install-service` видишь ошибку `Не нахожу /run/user/<uid>` — значит у твоего пользователя сейчас вообще нет user-systemd-сессии. Включи linger (один раз), и она появится навсегда:
+
+```bash
+sudo loginctl enable-linger "$USER"
+sudo systemctl start user@$(id -u).service
+```
+
 ## Где взять Bybit-ключ и секрет
 
 https://www.bybit.com → Account → API → API Management → создай ключ или скопируй существующий. Нужны права на чтение баланса/ордеров. Для торговли — на спот/фьючерсы.
