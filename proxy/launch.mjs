@@ -249,9 +249,47 @@ WantedBy=default.target
 `;
 }
 
+// Build env vars for `systemctl --user` invocations. SSH/zsh sessions on
+// Linux often don't propagate XDG_RUNTIME_DIR / DBUS_SESSION_BUS_ADDRESS,
+// and without them `systemctl --user` fails with:
+//   Failed to connect to user scope bus via local transport ...
+// We auto-populate them from /run/user/<uid> if available, so users don't
+// have to remember to `export XDG_RUNTIME_DIR=...` before each invocation.
+function systemctlEnv() {
+  const env = { ...process.env };
+  const uid = typeof process.getuid === "function" ? process.getuid() : null;
+  if (uid != null && !env.XDG_RUNTIME_DIR) {
+    env.XDG_RUNTIME_DIR = `/run/user/${uid}`;
+  }
+  if (env.XDG_RUNTIME_DIR && !env.DBUS_SESSION_BUS_ADDRESS) {
+    env.DBUS_SESSION_BUS_ADDRESS = `unix:path=${env.XDG_RUNTIME_DIR}/bus`;
+  }
+  return env;
+}
+
 function runSystemctl(...sysArgs) {
-  const r = spawnSync("systemctl", sysArgs, { stdio: "inherit" });
+  const r = spawnSync("systemctl", sysArgs, {
+    stdio: "inherit",
+    env: systemctlEnv(),
+  });
   return r.status === 0;
+}
+
+function ensureUserBusReady() {
+  const uid = typeof process.getuid === "function" ? process.getuid() : null;
+  if (uid == null) return;
+  const runtimeDir = process.env.XDG_RUNTIME_DIR || `/run/user/${uid}`;
+  if (!existsSync(runtimeDir)) {
+    console.error(
+      `\nНе нахожу ${runtimeDir} — у твоего пользователя нет активной user-systemd-сессии.\n` +
+      `Без неё systemctl --user не подключится к шине.\n\n` +
+      `Включи linger один раз (требует sudo, оправдан — это разовая настройка):\n` +
+      `    sudo loginctl enable-linger "$USER"\n` +
+      `    sudo systemctl start user@${uid}.service\n` +
+      `после этого ${runtimeDir} появится и сервис будет стартовать сам при включении компа.\n`,
+    );
+    process.exit(1);
+  }
 }
 
 async function installSystemdService() {
@@ -261,6 +299,8 @@ async function installSystemdService() {
     );
     process.exit(1);
   }
+  ensureUserBusReady();
+
   mkdirSync(SERVICE_UNIT_DIR, { recursive: true });
   writeFileSync(SERVICE_UNIT_FILE, buildSystemdUnit());
   console.log(`Записал systemd-юнит: ${SERVICE_UNIT_FILE}`);
@@ -292,12 +332,13 @@ async function uninstallSystemdService() {
     console.error(`--uninstall-service пока только для Linux + systemd.`);
     process.exit(1);
   }
+  const env = systemctlEnv();
   console.log(`Останавливаю и снимаю ${SERVICE_NAME}...`);
-  spawnSync("systemctl", ["--user", "disable", "--now", SERVICE_NAME], { stdio: "inherit" });
+  spawnSync("systemctl", ["--user", "disable", "--now", SERVICE_NAME], { stdio: "inherit", env });
   if (existsSync(SERVICE_UNIT_FILE)) {
     spawnSync("rm", ["-f", SERVICE_UNIT_FILE], { stdio: "inherit" });
     console.log(`Удалил ${SERVICE_UNIT_FILE}`);
   }
-  spawnSync("systemctl", ["--user", "daemon-reload"], { stdio: "inherit" });
+  spawnSync("systemctl", ["--user", "daemon-reload"], { stdio: "inherit", env });
   console.log("Готово.");
 }
