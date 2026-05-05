@@ -20,7 +20,15 @@ const SUPPORTED_SYMBOLS = new Set([
     'ADAUSDT', 'DOGEUSDT', 'DOTUSDT', 'AVAXUSDT',
     'LTCUSDT', 'LINKUSDT', 'MATICUSDT'
 ]);
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'openai/gpt-oss-120b:free';
+// Default switched from `gpt-oss-120b:free` (21 tok/s on the free provider —
+// slow enough to hit Vercel's 60s timeout when the prompt is long) to its
+// smaller MoE sibling `gpt-oss-20b:free` (21B params, ~5x faster). Same
+// JSON-output and instruction-following behaviour for our scoring procedure.
+// Operators can still pin a different model via OPENROUTER_MODEL.
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'openai/gpt-oss-20b:free';
+// Hard ceiling on the OpenRouter call so a slow upstream returns a clean
+// error instead of letting Vercel kill the function with a 504.
+const OPENROUTER_TIMEOUT_MS = 50_000;
 
 // Parse `?symbols=BTCUSDT,ETHUSDT` (case-insensitive, validated against
 // SUPPORTED_SYMBOLS, deduped). Returns DEFAULT_SYMBOLS on empty or invalid
@@ -98,27 +106,40 @@ LONG: TP>entry, SL<entry. SHORT: TP<entry, SL>entry. HET: entry/tp/sl можно
 }
 
 async function callOpenRouter(prompt, apiKey) {
-    const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-            'Authorization': `Bearer ${apiKey}`,
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-            model: OPENROUTER_MODEL,
-            // Single concise trade fits in <500 tokens; 700 leaves comfortable
-            // headroom but keeps OpenRouter fast.
-            max_tokens: 700,
-            // temperature 0 makes the model deterministic for identical
-            // input. User complained that hitting "Best trade" twice could
-            // flip BTC from SHORT to LONG on the same data — that was 0.2
-            // sampling. seed pins it where the model supports it.
-            temperature: 0,
-            top_p: 1,
-            seed: 42,
-            messages: [{ role: 'user', content: prompt }]
-        })
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), OPENROUTER_TIMEOUT_MS);
+    let r;
+    try {
+        r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            signal: controller.signal,
+            headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: OPENROUTER_MODEL,
+                // Single concise trade fits in <500 tokens; 700 leaves comfortable
+                // headroom but keeps OpenRouter fast.
+                max_tokens: 700,
+                // temperature 0 makes the model deterministic for identical
+                // input. User complained that hitting "Best trade" twice could
+                // flip BTC from SHORT to LONG on the same data — that was 0.2
+                // sampling. seed pins it where the model supports it.
+                temperature: 0,
+                top_p: 1,
+                seed: 42,
+                messages: [{ role: 'user', content: prompt }]
+            })
+        });
+    } catch (e) {
+        clearTimeout(timer);
+        if (e.name === 'AbortError') {
+            throw new Error(`OpenRouter не ответил за ${OPENROUTER_TIMEOUT_MS / 1000}с (модель ${OPENROUTER_MODEL}). Попробуй ещё раз или укажи более быструю модель в переменной OPENROUTER_MODEL (например openai/gpt-oss-20b:free).`);
+        }
+        throw e;
+    }
+    clearTimeout(timer);
 
     const text = await r.text();
     let data;

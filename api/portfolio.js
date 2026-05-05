@@ -19,7 +19,18 @@ const SUPPORTED_SYMBOLS = new Set([
     'ADAUSDT', 'DOGEUSDT', 'DOTUSDT', 'AVAXUSDT',
     'LTCUSDT', 'LINKUSDT', 'MATICUSDT'
 ]);
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'openai/gpt-oss-120b:free';
+// /api/portfolio asks for FIVE trades, so it generates ~5x the output tokens
+// of /api/analyze. The default `gpt-oss-120b:free` runs at ~21 tok/s on the
+// free provider — that overshoots Vercel's 60s function timeout reliably.
+// Use the smaller-but-much-faster sibling (gpt-oss-20b:free, 21B params, MoE)
+// unless the operator explicitly sets OPENROUTER_PORTFOLIO_MODEL.
+const OPENROUTER_MODEL =
+    process.env.OPENROUTER_PORTFOLIO_MODEL ||
+    'openai/gpt-oss-20b:free';
+// Hard ceiling on the OpenRouter call. Anything slower returns a clean
+// error to the client instead of hanging until Vercel kills the function
+// with a 504 FUNCTION_INVOCATION_TIMEOUT.
+const OPENROUTER_TIMEOUT_MS = 50_000;
 
 // Read POST body — Vercel/Node populates `req.body` for JSON requests, but
 // some adapters (Cloudflare Pages, custom Express) leave it as a stream, so
@@ -115,27 +126,40 @@ LONG: TP>entry, SL<entry. SHORT: TP<entry, SL>entry. TP минимум на 0.2%
 }
 
 async function callOpenRouter(prompt, apiKey) {
-    const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-            'Authorization': `Bearer ${apiKey}`,
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-            model: OPENROUTER_MODEL,
-            // 5 trades with concise reasons ≈ 1200-1400 tokens; 1500 is
-            // a safe ceiling. Was 2500, which let the free-tier model
-            // stretch the response and blow Vercel's 60s timeout.
-            max_tokens: 1500,
-            // temperature 0 + seed for deterministic output: clicking
-            // "5 пар" twice with the same data should return the same set,
-            // not a random reshuffle.
-            temperature: 0,
-            top_p: 1,
-            seed: 42,
-            messages: [{ role: 'user', content: prompt }]
-        })
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), OPENROUTER_TIMEOUT_MS);
+    let r;
+    try {
+        r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            signal: controller.signal,
+            headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: OPENROUTER_MODEL,
+                // 5 trades with concise reasons ≈ 1200-1400 tokens; 1500 is
+                // a safe ceiling. Was 2500, which let the free-tier model
+                // stretch the response and blow Vercel's 60s timeout.
+                max_tokens: 1500,
+                // temperature 0 + seed for deterministic output: clicking
+                // "5 пар" twice with the same data should return the same
+                // set, not a random reshuffle.
+                temperature: 0,
+                top_p: 1,
+                seed: 42,
+                messages: [{ role: 'user', content: prompt }]
+            })
+        });
+    } catch (e) {
+        clearTimeout(timer);
+        if (e.name === 'AbortError') {
+            throw new Error(`OpenRouter не ответил за ${OPENROUTER_TIMEOUT_MS / 1000}с (модель ${OPENROUTER_MODEL}). Попробуй ещё раз или укажи более быструю модель в переменной OPENROUTER_PORTFOLIO_MODEL (например openai/gpt-oss-20b:free).`);
+        }
+        throw e;
+    }
+    clearTimeout(timer);
 
     const text = await r.text();
     let data;
