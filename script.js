@@ -839,20 +839,24 @@ async function executeTrade() {
     
     try {
         let qty;
-        let price = currentTrade.entryPrice;
-        
+        // Sizing reference price: for limit orders this is the user's chosen
+        // price, for market orders we keep the AI-recommended entry (set when
+        // analysis ran) as a sizing anchor. Without a reference price we
+        // cannot convert a USDT amount into base-asset qty, which previously
+        // caused us to ship `qty = usdtAmount` (e.g. qty=15 BTC ≈ $1.5M) and
+        // get rejected with Bybit 110007 "ab not enough for new order".
+        const price = currentTrade.entryPrice;
+
         if (currentTrade.usdtAmount && price) {
             qty = parseFloat((currentTrade.usdtAmount / price).toFixed(4));
         } else if (currentTrade.positionSize) {
             qty = currentTrade.positionSize;
-        } else if (currentTrade.orderType === 'market') {
-            qty = parseFloat((currentTrade.usdtAmount || 10).toFixed(4));
         } else {
             alert('Укажите сумму в USDT');
             btn.disabled = false;
             return;
         }
-        
+
         if (!qty || qty <= 0) {
             alert('Неверное количество');
             btn.disabled = false;
@@ -887,12 +891,14 @@ async function executeTrade() {
         }
 
         console.log('Calculated qty:', qty, 'price:', price);
-        
-const payload = {
+
+        const isMarket = currentTrade.orderType === 'market';
+        const payload = {
             symbol: currentTrade.pair.replace('/', ''),
             side: currentTrade.direction === 'LONG' ? 'Buy' : 'Sell',
             qty: qty,
-            price: price || null,
+            // Market orders must not carry a price — Bybit fills at mark.
+            price: isMarket ? null : (price || null),
             tp: currentTrade.tp || null,
             sl: currentTrade.sl || null
         };
@@ -990,8 +996,14 @@ function applyManualInput() {
     
     currentTrade.usdtAmount = usdt;
     currentTrade.orderType = orderType;
-    currentTrade.entryPrice = orderType === 'market' ? null : price;
-    
+    // For limit orders use the user's chosen price. For market orders KEEP the
+    // existing entryPrice (set by analysis) as a sizing reference — qty is
+    // computed as usdtAmount / entryPrice in executeTrade(). The market
+    // endpoint ignores any client-sent price and fills at the live mark.
+    if (orderType === 'limit') {
+        currentTrade.entryPrice = price;
+    }
+
     document.getElementById('positionInfo').textContent = '$' + usdt.toFixed(2);
     document.getElementById('priceInfo').textContent = price ? '$' + price.toLocaleString() : 'Рыночная';
     
