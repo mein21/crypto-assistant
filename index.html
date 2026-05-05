@@ -56,12 +56,21 @@
             </div>
 
             <div class="bybit-config" id="bybitConfig" style="display:none;">
-                <label class="bybit-config-label">
-                    <span class="bybit-config-text">URL прокси:</span>
-                    <input type="url" id="bybitWorkerUrl" class="bybit-config-input" placeholder="https://abc-def.trycloudflare.com" autocomplete="off" spellcheck="false">
-                </label>
-                <span class="bybit-config-status" id="bybitConfigStatus"></span>
-                <span class="bybit-config-hint">Один раз (Linux + systemd): <code>cd /home/mein/crypto-assistant/ &amp;&amp; cd proxy &amp;&amp; npm install &amp;&amp; node launch.mjs --install-service</code> — введёшь Bybit-ключи, и launcher станет systemd-юнитом. После этого он сам стартует при включении компа, а свежий публичный URL всегда лежит в <code>/home/mein/crypto-assistant/proxy/tunnel-url.txt</code> — копируй сюда. Без auto-start: <code>cd /home/mein/crypto-assistant/proxy &amp;&amp; npm install &amp;&amp; nohup node launch.mjs &gt; launcher.log 2>&amp;1 &amp;</code>. Подробнее в <code>proxy/README.md</code>.</span>
+                <div class="bybit-config-collapsed">
+                    <span class="bybit-config-chip">
+                        <span class="bybit-config-check" aria-hidden="true">●</span>
+                        Прокси подключён
+                    </span>
+                    <button type="button" class="bybit-config-edit" id="bybitConfigEdit" aria-label="Изменить URL прокси">Изменить</button>
+                </div>
+                <div class="bybit-config-expanded">
+                    <label class="bybit-config-label">
+                        <span class="bybit-config-text">URL прокси:</span>
+                        <input type="url" id="bybitWorkerUrl" class="bybit-config-input" placeholder="https://abc-def.trycloudflare.com" autocomplete="off" spellcheck="false">
+                    </label>
+                    <span class="bybit-config-status" id="bybitConfigStatus"></span>
+                    <span class="bybit-config-hint">Один раз (Linux + systemd): <code>cd /home/mein/crypto-assistant/ &amp;&amp; cd proxy &amp;&amp; npm install &amp;&amp; node launch.mjs --install-service</code> — введёшь Bybit-ключи, и launcher станет systemd-юнитом. После этого он сам стартует при включении компа, а свежий публичный URL всегда лежит в <code>/home/mein/crypto-assistant/proxy/tunnel-url.txt</code> — копируй сюда. Без auto-start: <code>cd /home/mein/crypto-assistant/proxy &amp;&amp; npm install &amp;&amp; nohup node launch.mjs &gt; launcher.log 2>&amp;1 &amp;</code>. Подробнее в <code>proxy/README.md</code>.</span>
+                </div>
             </div>
 
             <div class="button-grid">

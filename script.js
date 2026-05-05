@@ -39,6 +39,13 @@ function setBybitStatus(text, kind) {
     bybitConfigStatus.textContent = text || '';
     bybitConfigStatus.dataset.kind = kind || '';
 }
+// Collapse the proxy URL panel into a small "connected" chip when the proxy
+// is happy, expand it back when something goes wrong (or when user clicks the
+// edit button). Single source of truth for the .is-connected class.
+function setProxyConnected(connected) {
+    if (!bybitConfig) return;
+    bybitConfig.classList.toggle('is-connected', !!connected);
+}
 
 // Smoothly tween a numeric value displayed inside an element, then briefly
 // flash it. Falls back to plain assignment when reduced-motion is preferred.
@@ -92,15 +99,28 @@ async function pingBybitWorker() {
     const url = getBybitWorkerUrl();
     if (!url) {
         setBybitStatus('URL не задан — балансы и анализ-портфеля не будут работать.', 'warn');
-        return;
+        setProxyConnected(false);
+        return false;
     }
     setBybitStatus('Проверяю прокси…', '');
     try {
         const r = await fetch(`${url}/health`, { method: 'GET', mode: 'cors' });
-        if (r.ok) setBybitStatus('Прокси отвечает ✓', 'ok');
-        else setBybitStatus(`Прокси вернул HTTP ${r.status}`, 'err');
+        if (r.ok) {
+            setBybitStatus('Прокси отвечает ✓', 'ok');
+            setProxyConnected(true);
+            // Refresh API-dependent UI (balance) so the user immediately sees
+            // the proxy "come alive" without having to flip the toggle off
+            // and back on.
+            if (isBybitEnabled()) loadBalance();
+            return true;
+        }
+        setBybitStatus(`Прокси вернул HTTP ${r.status}`, 'err');
+        setProxyConnected(false);
+        return false;
     } catch (e) {
         setBybitStatus(`Прокси недоступен: ${e.message}`, 'err');
+        setProxyConnected(false);
+        return false;
     }
 }
 if (bybitWorkerUrlInput) {
@@ -120,12 +140,22 @@ if (bybitWorkerUrlInput) {
             setBybitStatus('Невалидный URL.', 'err');
             return;
         }
-        pingBybitWorker().then(() => { if (isBybitEnabled()) loadBalance(); });
+        pingBybitWorker();
     };
     bybitWorkerUrlInput.addEventListener('change', save);
     bybitWorkerUrlInput.addEventListener('blur', save);
     bybitWorkerUrlInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') { e.preventDefault(); bybitWorkerUrlInput.blur(); }
+    });
+}
+const bybitConfigEditBtn = document.getElementById('bybitConfigEdit');
+if (bybitConfigEditBtn) {
+    bybitConfigEditBtn.addEventListener('click', () => {
+        setProxyConnected(false);
+        if (bybitWorkerUrlInput) {
+            bybitWorkerUrlInput.focus();
+            bybitWorkerUrlInput.select();
+        }
     });
 }
 if (bybitToggle) {
@@ -134,12 +164,14 @@ if (bybitToggle) {
         applyBybitVisibility();
         if (bybitToggle.checked) {
             if (getBybitWorkerUrl()) {
-                pingBybitWorker().then(() => loadBalance());
+                pingBybitWorker();
             } else {
                 setBybitStatus('URL не задан — балансы и анализ-портфеля не будут работать.', 'warn');
+                setProxyConnected(false);
             }
         } else {
             setBybitStatus('', '');
+            setProxyConnected(false);
             balanceEl.textContent = '--';
         }
     });
@@ -176,11 +208,18 @@ async function loadBalance() {
             animateNumber(balanceEl, d.balance, { decimals: 2 });
         } else {
             balanceEl.textContent = '--';
-            if (d.error && bybitConfigStatus) setBybitStatus(d.error, 'err');
+            if (d.error && bybitConfigStatus) {
+                setBybitStatus(d.error, 'err');
+                // Re-expand the proxy panel so the error is visible to the user
+                // (panel was likely collapsed after a successful health-check).
+                setProxyConnected(false);
+            }
         }
     } catch (e) {
         console.error('Balance error:', e);
         balanceEl.textContent = '--';
+        setBybitStatus(`Ошибка балансов: ${e.message}`, 'err');
+        setProxyConnected(false);
     }
 }
 
