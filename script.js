@@ -828,3 +828,159 @@ async function executePairOrder(index) {
         alert('Ошибка: ' + e.message);
     }
 }
+// ============================================================================
+// Theme toggle + cursor-web decorative effect
+// ----------------------------------------------------------------------------
+
+(function setupThemeToggle() {
+    const btn = document.getElementById('themeToggle');
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+        const current = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+        const next = current === 'light' ? 'dark' : 'light';
+        document.documentElement.setAttribute('data-theme', next);
+        try { localStorage.setItem('theme', next); } catch (e) { /* private mode */ }
+    });
+})();
+
+(function setupCursorWeb() {
+    const canvas = document.getElementById('cursorWeb');
+    if (!canvas) return;
+
+    // Skip on touch / small / reduced-motion (CSS already hides it, but bail
+    // early so we don't burn CPU running the loop).
+    const fineCursor = window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+    const wideEnough = window.matchMedia('(min-width: 720px)').matches;
+    const noMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (!fineCursor || !wideEnough || noMotion) return;
+
+    const ctx = canvas.getContext('2d');
+    let dpr = Math.max(1, window.devicePixelRatio || 1);
+    let W = 0, H = 0;
+
+    function resize() {
+        dpr = Math.max(1, window.devicePixelRatio || 1);
+        W = window.innerWidth;
+        H = window.innerHeight;
+        canvas.width = Math.floor(W * dpr);
+        canvas.height = Math.floor(H * dpr);
+        canvas.style.width = W + 'px';
+        canvas.style.height = H + 'px';
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    resize();
+    window.addEventListener('resize', resize);
+
+    // Each thread is a small chain of nodes that follows the cursor with damped
+    // velocity + gravity + slight horizontal sway. The first node is anchored
+    // at a small offset from the cursor tip (so threads appear to hang from
+    // BELOW the arrow point rather than from the cursor's hot-spot).
+    const THREAD_COUNT = 7;
+    const NODES_PER_THREAD = 14;
+    const NODE_SPACING = 6;          // ideal spacing between nodes (constraint relaxation target)
+    const GRAVITY = 0.18;
+    const DAMPING = 0.86;
+    const SWAY_AMP = 0.05;
+
+    // Anchor offset from cursor (px). Threads fan out slightly horizontally.
+    const anchorOffsets = [];
+    for (let i = 0; i < THREAD_COUNT; i++) {
+        const t = (i - (THREAD_COUNT - 1) / 2) / ((THREAD_COUNT - 1) / 2 || 1); // -1..+1
+        anchorOffsets.push({ dx: t * 9, dy: 12 + Math.abs(t) * 2 });
+    }
+
+    const threads = anchorOffsets.map(() => {
+        const nodes = [];
+        for (let j = 0; j < NODES_PER_THREAD; j++) {
+            nodes.push({ x: -100, y: -100, vx: 0, vy: 0 });
+        }
+        return { nodes };
+    });
+
+    let mx = -200, my = -200;
+    let lastMoveAt = performance.now();
+    let cursorVisible = true;
+
+    window.addEventListener('mousemove', (e) => {
+        mx = e.clientX;
+        my = e.clientY;
+        lastMoveAt = performance.now();
+        cursorVisible = true;
+    });
+    document.addEventListener('mouseleave', () => { cursorVisible = false; });
+    document.addEventListener('mouseenter', () => { cursorVisible = true; });
+
+    let phase = 0;
+    function tick() {
+        phase += 0.02;
+
+        // Resolve the current --accent-glow color so threads pick up the
+        // active theme automatically.
+        const css = getComputedStyle(document.documentElement);
+        const stroke = (css.getPropertyValue('--accent') || '#fff').trim();
+
+        ctx.clearRect(0, 0, W, H);
+
+        // Idle fade — if the cursor is parked or off-page, gently drop the
+        // threads instead of hard-cutting.
+        const idle = !cursorVisible || (performance.now() - lastMoveAt) > 600;
+
+        for (let i = 0; i < threads.length; i++) {
+            const { nodes } = threads[i];
+            const off = anchorOffsets[i];
+            const ax = mx + off.dx;
+            const ay = my + off.dy;
+
+            // Anchor head on the cursor (or just teleport off-screen if idle).
+            nodes[0].x = ax;
+            nodes[0].y = ay;
+            nodes[0].vx = 0;
+            nodes[0].vy = 0;
+
+            for (let j = 1; j < nodes.length; j++) {
+                const n = nodes[j];
+                n.vy += GRAVITY;
+                // Horizontal sway gets stronger toward the tip.
+                n.vx += Math.sin(phase + i * 0.7 + j * 0.4) * SWAY_AMP * (j / nodes.length);
+                n.vx *= DAMPING;
+                n.vy *= DAMPING;
+                n.x += n.vx;
+                n.y += n.vy;
+
+                // Distance constraint to the previous node.
+                const prev = nodes[j - 1];
+                const dx = n.x - prev.x;
+                const dy = n.y - prev.y;
+                const d = Math.hypot(dx, dy) || 0.001;
+                const diff = (d - NODE_SPACING) / d;
+                n.x -= dx * diff;
+                n.y -= dy * diff;
+            }
+
+            // Draw the thread.
+            ctx.lineCap = 'round';
+            ctx.strokeStyle = stroke;
+            const alpha = idle ? 0.25 : 0.65;
+            ctx.globalAlpha = alpha;
+            ctx.lineWidth = 0.9;
+
+            ctx.beginPath();
+            ctx.moveTo(nodes[0].x, nodes[0].y);
+            for (let j = 1; j < nodes.length; j++) {
+                ctx.lineTo(nodes[j].x, nodes[j].y);
+            }
+            ctx.stroke();
+
+            // Tip dot.
+            const tip = nodes[nodes.length - 1];
+            ctx.globalAlpha = alpha * 1.4;
+            ctx.beginPath();
+            ctx.arc(tip.x, tip.y, 1.1, 0, Math.PI * 2);
+            ctx.fillStyle = stroke;
+            ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+        requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+})();
