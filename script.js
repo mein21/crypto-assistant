@@ -9,6 +9,7 @@ const results = document.getElementById('results');
 
 const balanceEl = document.getElementById('balance');
 const balanceWidget = document.getElementById('balanceWidget');
+const balanceUnitEl = balanceWidget ? balanceWidget.querySelector('.unit') : null;
 const bybitToggle = document.getElementById('bybitEnabled');
 const bybitConfig = document.getElementById('bybitConfig');
 const bybitWorkerUrlInput = document.getElementById('bybitWorkerUrl');
@@ -213,18 +214,32 @@ async function loadBalance() {
         const r = await fetch(`/api/balance?_=${Date.now()}`, opts);
         const d = await r.json();
         if (d.success) {
-            // Prefer equity (walletBalance + unrealised PnL) so the widget
-            // actually moves while open futures positions accrue PnL — the
-            // raw walletBalance only changes when PnL is realised.
-            const display = Number.isFinite(d.equity) && d.equity > 0 ? d.equity : d.balance;
+            // Prefer totalEquity — full UTA equity in USD: USDT cash + every
+            // non-USDT spot holding at mark price + unrealised PnL of every
+            // open position. This matches the headline number Bybit shows on
+            // its own dashboard. Fall back to USDT-only equity, then to
+            // walletBalance, so the widget never goes blank if the upstream
+            // payload is partial.
+            const display = (
+                Number.isFinite(d.totalEquity) && d.totalEquity > 0 ? d.totalEquity :
+                Number.isFinite(d.equity) && d.equity > 0 ? d.equity :
+                d.balance
+            );
             animateNumber(balanceEl, display, { decimals: 2 });
+            // Switch the unit label to USD when we're showing totalEquity
+            // (it's a USD-denominated aggregate across all coins, not USDT).
+            if (balanceUnitEl) {
+                balanceUnitEl.textContent = (Number.isFinite(d.totalEquity) && d.totalEquity > 0)
+                    ? 'USD' : 'USDT';
+            }
             if (balanceWidget) {
-                const tip = `Wallet: ${(d.wallet ?? d.balance).toFixed(2)} USDT\n` +
-                            `Equity: ${(d.equity ?? 0).toFixed(2)} USDT\n` +
-                            `Available: ${(d.available ?? 0).toFixed(2)} USDT\n` +
-                            `Unrealised PnL: ${(d.unrealisedPnl ?? 0).toFixed(2)} USDT\n` +
-                            `Total equity (UTA): ${(d.totalEquity ?? 0).toFixed(2)} USD\n` +
-                            `Updated: ${new Date(d.ts || Date.now()).toLocaleTimeString()}`;
+                const tip = `Total equity (UTA): ${(d.totalEquity ?? 0).toFixed(2)} USD\n` +
+                            `Wallet (USDT): ${(d.wallet ?? d.balance).toFixed(2)}\n` +
+                            `Equity (USDT): ${(d.equity ?? 0).toFixed(2)}\n` +
+                            `Available (USDT): ${(d.available ?? 0).toFixed(2)}\n` +
+                            `Unrealised PnL (USDT): ${(d.unrealisedPnl ?? 0).toFixed(2)}\n` +
+                            `Updated: ${new Date(d.ts || Date.now()).toLocaleTimeString()}\n` +
+                            `(refreshes every 60s while tab is active, click to refresh now)`;
                 balanceWidget.title = tip;
                 balanceWidget.dataset.lastTs = String(d.ts || Date.now());
             }
@@ -245,28 +260,90 @@ async function loadBalance() {
     }
 }
 
-// Auto-refresh the balance every 20s while the page is visible, plus refresh
-// on tab focus and on manual click of the widget. Without this, walletBalance
-// looks "frozen" between user actions.
-const BALANCE_REFRESH_MS = 20_000;
+// Auto-refresh the balance while the page is visible AND the user has been
+// active in the last 5 minutes. Without this, walletBalance/equity looks
+// "frozen" between user actions; with it, we still don't burn Vercel /
+// Bybit quota when the tab is just sitting open in the background.
+// The user can also disable polling entirely via the round toggle button
+// next to the theme switcher (state persisted in localStorage).
+const BALANCE_REFRESH_MS = 60_000;            // 60s — ~1440 calls/day per active tab
+const BALANCE_IDLE_TIMEOUT_MS = 5 * 60_000;   // pause polling after 5 min idle
+const BALANCE_AUTOREFRESH_KEY = 'balanceAutoRefresh';
 let balanceRefreshTimer = null;
+let lastUserActivityTs = Date.now();
+
+function isBalanceAutoRefreshOn() {
+    try {
+        const raw = localStorage.getItem(BALANCE_AUTOREFRESH_KEY);
+        // default = on if nothing was ever stored
+        return raw === null ? true : raw === 'on';
+    } catch (_) {
+        return true;
+    }
+}
+
+function noteUserActivity() { lastUserActivityTs = Date.now(); }
+['mousemove', 'keydown', 'click', 'scroll', 'touchstart'].forEach(evt => {
+    document.addEventListener(evt, noteUserActivity, { passive: true });
+});
+
 function startBalanceAutoRefresh() {
     if (balanceRefreshTimer) clearInterval(balanceRefreshTimer);
+    if (!isBalanceAutoRefreshOn()) return;
     balanceRefreshTimer = setInterval(() => {
-        if (document.visibilityState === 'visible' && isBybitEnabled()) {
-            loadBalance();
-        }
+        if (document.visibilityState !== 'visible') return;
+        if (!isBybitEnabled()) return;
+        if (Date.now() - lastUserActivityTs > BALANCE_IDLE_TIMEOUT_MS) return;
+        loadBalance();
     }, BALANCE_REFRESH_MS);
 }
+function stopBalanceAutoRefresh() {
+    if (balanceRefreshTimer) {
+        clearInterval(balanceRefreshTimer);
+        balanceRefreshTimer = null;
+    }
+}
 document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && isBybitEnabled()) loadBalance();
+    if (document.visibilityState === 'visible' && isBybitEnabled()) {
+        noteUserActivity();
+        if (isBalanceAutoRefreshOn()) loadBalance();
+    }
 });
 if (balanceWidget) {
     balanceWidget.style.cursor = 'pointer';
     balanceWidget.addEventListener('click', () => {
+        noteUserActivity();
+        // Manual click always refreshes regardless of auto-refresh setting.
         if (isBybitEnabled()) loadBalance();
     });
 }
+
+(function setupBalanceRefreshToggle() {
+    const btn = document.getElementById('balanceRefreshToggle');
+    if (!btn) return;
+    const apply = (on) => {
+        btn.dataset.state = on ? 'on' : 'off';
+        btn.title = on
+            ? 'Авто-обновление баланса каждые 60с (клик — выключить)'
+            : 'Авто-обновление выключено (клик — включить)';
+        btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    };
+    apply(isBalanceAutoRefreshOn());
+    btn.addEventListener('click', () => {
+        const next = !isBalanceAutoRefreshOn();
+        try { localStorage.setItem(BALANCE_AUTOREFRESH_KEY, next ? 'on' : 'off'); }
+        catch (_) { /* private mode — behave as in-memory only */ }
+        apply(next);
+        if (next) {
+            noteUserActivity();
+            startBalanceAutoRefresh();
+            if (isBybitEnabled()) loadBalance();
+        } else {
+            stopBalanceAutoRefresh();
+        }
+    });
+})();
+
 startBalanceAutoRefresh();
 
 let currentButton = null;
