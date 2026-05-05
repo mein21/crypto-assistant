@@ -145,12 +145,17 @@ svg { display: block; }
 .container {
     position: relative;
     z-index: 1;
-    width: min(960px, 100% - 32px);
+    width: min(760px, 100% - 32px);
     margin: 0 auto;
     padding: clamp(28px, 5vw, 56px) 0 80px;
     display: flex;
     flex-direction: column;
     gap: clamp(20px, 3vw, 32px);
+}
+/* When the wide '5 пар' table is rendered, let the card breathe so the
+   8-column table doesn't have to scroll horizontally on desktop. */
+.container:has(.results.show) {
+    width: min(1040px, 100% - 32px);
 }
 
 .title {
