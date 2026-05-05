@@ -7,15 +7,6 @@
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 
-// Same default that proxy/launch.mjs writes to the user's local proxy/.env
-// when they install the launcher. Keeping the two sides in sync means the
-// proxy's `Bearer` check works out of the box without the user having to
-// manage a `WORKER_AUTH_TOKEN` env var on Vercel themselves. Power-users
-// can still override it (a) by setting WORKER_AUTH_TOKEN on Vercel, or
-// (b) by sending an X-Worker-Token request header from the browser.
-const DEFAULT_WORKER_AUTH_TOKEN =
-    '2dca78d44cf3e74559d5ac4c0aa4b8e90e5f4aa0d900a2ad0f16a23a78f4ef74';
-
 function sanitizeWorkerUrl(raw) {
     if (typeof raw !== 'string') return null;
     const trimmed = raw.trim().replace(/\/+$/, '');
@@ -30,28 +21,13 @@ function sanitizeWorkerUrl(raw) {
     return parsed.origin;
 }
 
-function sanitizeWorkerToken(raw) {
-    if (typeof raw !== 'string') return '';
-    // Tokens must be ASCII-safe to ride in an HTTP header. Reject anything
-    // suspicious so we don't crash node's fetch with invalid header chars.
-    const trimmed = raw.trim();
-    if (!trimmed || trimmed.length > 256) return '';
-    if (!/^[A-Za-z0-9._\-]+$/.test(trimmed)) return '';
-    return trimmed;
-}
-
 function getWorkerOverrides(req) {
     const headerUrl = req?.headers?.['x-worker-url'] || req?.headers?.['X-Worker-Url'];
     const workerUrl = sanitizeWorkerUrl(headerUrl);
-    const headerToken = req?.headers?.['x-worker-token'] || req?.headers?.['X-Worker-Token'];
-    const workerToken = sanitizeWorkerToken(headerToken);
-    const out = {};
-    if (workerUrl) out.workerUrl = workerUrl;
-    if (workerToken) out.workerToken = workerToken;
-    return out;
+    return workerUrl ? { workerUrl } : {};
 }
 
-function getWorkerConfig({ workerUrl, workerToken } = {}) {
+function getWorkerConfig({ workerUrl } = {}) {
     const url = workerUrl || process.env.WORKER_URL;
     if (!url) {
         const err = new Error('WORKER_URL не настроен. Включи переключатель "Bybit" и вставь URL прокси (или задай WORKER_URL в Vercel env).');
@@ -60,14 +36,18 @@ function getWorkerConfig({ workerUrl, workerToken } = {}) {
     }
     return {
         url: url.replace(/\/+$/, ''),
-        // Precedence: per-request browser override > Vercel env > shared default.
-        token: workerToken || process.env.WORKER_AUTH_TOKEN || DEFAULT_WORKER_AUTH_TOKEN
+        // Bearer auth between Vercel and the proxy is opt-in. The default
+        // launcher (proxy/launch.mjs) does not export WORKER_AUTH_TOKEN, so
+        // server.js' `if (WORKER_AUTH_TOKEN)` gate is a no-op and we leave
+        // the Authorization header off entirely. Power-users who set
+        // WORKER_AUTH_TOKEN on both ends keep the protection.
+        token: process.env.WORKER_AUTH_TOKEN || ''
     };
 }
 
 async function callBybit(endpoint, method = 'GET', params = {}, opts = {}) {
-    const { timeoutMs = DEFAULT_TIMEOUT_MS, workerUrl, workerToken } = opts;
-    const { url, token } = getWorkerConfig({ workerUrl, workerToken });
+    const { timeoutMs = DEFAULT_TIMEOUT_MS, workerUrl } = opts;
+    const { url, token } = getWorkerConfig({ workerUrl });
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -173,7 +153,7 @@ async function placeFuturesOrder(symbol, side, qty, price = null, tp = null, sl 
 function setCors(res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Worker-Url, X-Worker-Token');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Worker-Url');
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
 }
 
