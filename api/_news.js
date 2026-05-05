@@ -17,9 +17,12 @@ const FEEDS = [
 ];
 
 const NEWS_TTL_MS = 5 * 60 * 1000; // 5 minutes
-const MAX_HEADLINES = 12;
+// 6 headlines keeps the prompt small enough that OpenRouter's free tier
+// doesn't blow the 60s Vercel function timeout. Bumping this up materially
+// slows /api/portfolio (which already asks the model for 5 trades).
+const MAX_HEADLINES = 6;
 const MAX_AGE_HOURS = 36; // some feeds publish slowly on weekends
-const FETCH_TIMEOUT_MS = 4000;
+const FETCH_TIMEOUT_MS = 2500;
 
 let cache = { expires: 0, items: [] };
 
@@ -214,14 +217,12 @@ function formatNewsBlock(items, focusSymbols = []) {
             .filter(Boolean)
     );
 
-    const nowSec = Math.floor(Date.now() / 1000);
+    // Compact format: "★ [BTC,MACRO] Title". We drop source/age to keep the
+    // prompt short — the AI only needs the gist + tags to weigh sentiment.
     const lines = items.map(it => {
         const tags = (it.tags && it.tags.length) ? `[${it.tags.join(',')}] ` : '';
         const focus = it.tags && it.tags.some(t => focusCoins.has(t)) ? '★ ' : '';
-        const age = relativeAge(it.publishedAt, nowSec);
-        const ageStr = age ? ` (${age})` : '';
-        const source = it.source ? ` — ${it.source}` : '';
-        return `- ${focus}${tags}${it.title}${source}${ageStr}`;
+        return `- ${focus}${tags}${it.title}`;
     });
 
     return lines.join('\n');
@@ -234,13 +235,10 @@ function formatNewsBlock(items, focusSymbols = []) {
 // inventing them.
 function formatUpcomingHints(nowDate = new Date()) {
     const iso = nowDate.toISOString().slice(0, 10);
-    const dow = nowDate.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' });
     return (
-        `Сегодня ${iso} (${dow}, UTC). Учти известные тебе ближайшие (в пределах 7 дней) ` +
-        `макро- и крипто-события: заседания FOMC/ECB, релизы CPI/PPI/NFP, ` +
-        `дедлайны SEC по ETF, разблокировки крупных токенов, плановые хардфорки/апгрейды. ` +
-        `Если данных о конкретных датах ты не помнишь — явно скажи "событий не идентифицировано" ` +
-        `вместо выдумок.`
+        `Сегодня ${iso} UTC. Учти известные ближайшие (≤7 дней) события: FOMC/ECB, ` +
+        `CPI/NFP, дедлайны SEC по ETF, разблокировки токенов, апгрейды сетей. ` +
+        `Не помнишь дат — пиши "событий не идентифицировано", не выдумывай.`
     );
 }
 
