@@ -81,7 +81,13 @@ async function callBybit(endpoint, method = 'GET', params = {}, opts = {}) {
         }
 
         if (data.retCode !== 0 && data.retCode !== undefined) {
-            const err = new Error(`Bybit ${data.retCode}: ${data.retMsg || 'unknown'}`);
+            let msg = `Bybit ${data.retCode}: ${data.retMsg || 'unknown'}`;
+            // Bybit's terse English retMsg for some common errors is hard to
+            // act on for our Russian-speaking users, so we append a short hint.
+            if (data.retCode === 110007) {
+                msg += '. Недостаточно доступного баланса (Available Balance) для нового ордера: уменьшите сумму, увеличьте плечо по символу или закройте часть открытых позиций/ордеров.';
+            }
+            const err = new Error(msg);
             err.code = 'BYBIT_API_ERROR';
             err.payload = data;
             throw err;
