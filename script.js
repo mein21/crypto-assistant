@@ -2034,3 +2034,292 @@ async function executePairOrder(index) {
     }
     requestAnimationFrame(tick);
 })();
+
+/* ============================================================
+ * Pause + lockout overlay + "Catch the green candles" mini-game.
+ * ============================================================
+ *
+ * UX:
+ *   - Top-right pause icon (next to theme/refresh toggles) opens a
+ *     fullscreen overlay that covers the entire app. While the overlay
+ *     is open, <main> is set to `inert` so keyboard/screen-reader can't
+ *     reach the underlying UI.
+ *   - The overlay shows a small canvas mini-game: green candles fall
+ *     from the top, the user taps green ones (+1) and avoids red ones
+ *     (-1, breaks streak). Best score is persisted in localStorage.
+ *   - Resume: click "Продолжить" or press Escape.
+ *
+ * The game loop is fully self-contained: it only runs while the overlay
+ * is open (rAF cancelled on close), so it costs nothing the rest of the
+ * time.
+ */
+(function setupPause() {
+    const btn = document.getElementById('pauseToggle');
+    const overlay = document.getElementById('pauseOverlay');
+    const canvas = document.getElementById('pauseGame');
+    const resumeBtn = document.getElementById('pauseResume');
+    const scoreEl = document.getElementById('pauseScore');
+    const bestEl = document.getElementById('pauseBest');
+    const streakEl = document.getElementById('pauseStreak');
+    if (!btn || !overlay || !canvas || !resumeBtn) return;
+
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width;
+    const H = canvas.height;
+
+    const state = {
+        running: false,
+        candles: [],
+        sparkles: [],
+        score: 0,
+        streak: 0,
+        best: 0,
+        spawnAcc: 0,
+        spawnInterval: 950,
+        elapsed: 0,
+        lastTs: 0,
+        rafId: 0
+    };
+
+    try {
+        const savedBest = parseInt(localStorage.getItem('pauseGameBest'), 10);
+        if (Number.isFinite(savedBest) && savedBest >= 0) state.best = savedBest;
+    } catch (_) { /* ignore quota / privacy errors */ }
+
+    function rand(min, max) { return min + Math.random() * (max - min); }
+    function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
+
+    function spawnCandle() {
+        const isGreen = Math.random() < 0.62;
+        const bodyW = 18;
+        const bodyH = rand(32, 70);
+        const wickTop = rand(6, 18);
+        const wickBottom = rand(6, 18);
+        const totalH = wickTop + bodyH + wickBottom;
+        const x = rand(8, W - bodyW - 8);
+        const speed = rand(1.2, 2.4) * (1 + state.elapsed / 60000); // creeps up over time
+        state.candles.push({
+            x, y: -totalH,
+            bodyW, bodyH, wickTop, wickBottom,
+            speed,
+            isGreen,
+            caught: false,
+            shake: 0
+        });
+    }
+
+    function drawBackground() {
+        // Subtle grid scanlines + soft vignette to match the site's aesthetic.
+        ctx.fillStyle = '#050505';
+        ctx.fillRect(0, 0, W, H);
+
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.04)';
+        ctx.lineWidth = 1;
+        for (let y = 0; y < H; y += 24) {
+            ctx.beginPath();
+            ctx.moveTo(0, y + 0.5);
+            ctx.lineTo(W, y + 0.5);
+            ctx.stroke();
+        }
+        for (let x = 0; x < W; x += 24) {
+            ctx.beginPath();
+            ctx.moveTo(x + 0.5, 0);
+            ctx.lineTo(x + 0.5, H);
+            ctx.stroke();
+        }
+    }
+
+    function drawCandle(c) {
+        const cx = c.x + c.bodyW / 2;
+        const wickX = cx - 1;
+        const color = c.isGreen ? '#22c55e' : '#ef4444';
+        const glow = c.isGreen ? 'rgba(34, 197, 94, 0.45)' : 'rgba(239, 68, 68, 0.45)';
+
+        ctx.save();
+        if (c.shake > 0) {
+            ctx.translate((Math.random() - 0.5) * c.shake, (Math.random() - 0.5) * c.shake);
+        }
+
+        // wick (top)
+        ctx.fillStyle = color;
+        ctx.fillRect(wickX, c.y, 2, c.wickTop);
+        // body
+        ctx.shadowColor = glow;
+        ctx.shadowBlur = 8;
+        ctx.fillRect(c.x, c.y + c.wickTop, c.bodyW, c.bodyH);
+        ctx.shadowBlur = 0;
+        // wick (bottom)
+        ctx.fillRect(wickX, c.y + c.wickTop + c.bodyH, 2, c.wickBottom);
+
+        // outline accent
+        ctx.strokeStyle = c.isGreen ? 'rgba(34, 197, 94, 0.85)' : 'rgba(239, 68, 68, 0.85)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(c.x + 0.5, c.y + c.wickTop + 0.5, c.bodyW - 1, c.bodyH - 1);
+
+        ctx.restore();
+    }
+
+    function drawSparkles() {
+        for (const s of state.sparkles) {
+            const a = clamp(s.life / s.maxLife, 0, 1);
+            ctx.fillStyle = s.color.replace('ALPHA', a.toFixed(2));
+            ctx.fillRect(s.x, s.y, 2, 2);
+        }
+    }
+
+    function spawnSparkles(x, y, isGreen) {
+        const baseColor = isGreen ? 'rgba(34, 197, 94, ALPHA)' : 'rgba(239, 68, 68, ALPHA)';
+        const count = isGreen ? 14 : 8;
+        for (let i = 0; i < count; i++) {
+            state.sparkles.push({
+                x, y,
+                vx: rand(-2, 2),
+                vy: rand(-3, -0.5),
+                life: 30,
+                maxLife: 30,
+                color: baseColor
+            });
+        }
+    }
+
+    function update(dt) {
+        state.elapsed += dt;
+        state.spawnAcc += dt;
+
+        // spawn interval ramps from ~950ms down to ~420ms over ~45s
+        const factor = clamp(state.elapsed / 45000, 0, 1);
+        state.spawnInterval = 950 - factor * 530;
+
+        if (state.spawnAcc >= state.spawnInterval) {
+            state.spawnAcc = 0;
+            spawnCandle();
+        }
+
+        for (const c of state.candles) {
+            c.y += c.speed * (dt / 16);
+            if (c.shake > 0) c.shake -= 0.4;
+        }
+        // remove off-screen / caught
+        state.candles = state.candles.filter(c => !c.caught && c.y < H + 80);
+
+        // sparkles
+        for (const s of state.sparkles) {
+            s.x += s.vx;
+            s.y += s.vy;
+            s.vy += 0.12; // gravity
+            s.life -= dt / 16;
+        }
+        state.sparkles = state.sparkles.filter(s => s.life > 0);
+    }
+
+    function draw() {
+        drawBackground();
+        for (const c of state.candles) drawCandle(c);
+        drawSparkles();
+    }
+
+    function step(ts) {
+        if (!state.running) return;
+        const dt = state.lastTs ? Math.min(48, ts - state.lastTs) : 16;
+        state.lastTs = ts;
+        update(dt);
+        draw();
+        state.rafId = requestAnimationFrame(step);
+    }
+
+    function updateHud() {
+        scoreEl.textContent = String(state.score);
+        bestEl.textContent = String(state.best);
+        streakEl.textContent = String(state.streak);
+    }
+
+    function handleHit(clientX, clientY) {
+        const rect = canvas.getBoundingClientRect();
+        const x = (clientX - rect.left) * (W / rect.width);
+        const y = (clientY - rect.top) * (H / rect.height);
+
+        // Hit-test from front (top-most spawned last) to back so a tap on
+        // overlapping candles registers on the visually-front one.
+        for (let i = state.candles.length - 1; i >= 0; i--) {
+            const c = state.candles[i];
+            if (c.caught) continue;
+            const left = c.x - 4;
+            const right = c.x + c.bodyW + 4;
+            const top = c.y;
+            const bot = c.y + c.wickTop + c.bodyH + c.wickBottom;
+            if (x >= left && x <= right && y >= top && y <= bot) {
+                if (c.isGreen) {
+                    c.caught = true;
+                    state.score += 1;
+                    state.streak += 1;
+                    if (state.streak > 0 && state.streak % 5 === 0) {
+                        state.score += 2; // streak bonus
+                    }
+                    spawnSparkles(c.x + c.bodyW / 2, c.y + c.wickTop + c.bodyH / 2, true);
+                } else {
+                    state.score = Math.max(0, state.score - 1);
+                    state.streak = 0;
+                    c.shake = 6;
+                    spawnSparkles(c.x + c.bodyW / 2, c.y + c.wickTop + c.bodyH / 2, false);
+                }
+                if (state.score > state.best) {
+                    state.best = state.score;
+                    try { localStorage.setItem('pauseGameBest', String(state.best)); } catch (_) {}
+                }
+                updateHud();
+                return;
+            }
+        }
+    }
+
+    canvas.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        handleHit(e.clientX, e.clientY);
+    });
+
+    function open() {
+        if (state.running) return;
+        overlay.hidden = false;
+        // Make the rest of the page non-interactive while paused.
+        const main = document.querySelector('main.container');
+        if (main) main.setAttribute('inert', '');
+        // Reset round
+        state.candles = [];
+        state.sparkles = [];
+        state.score = 0;
+        state.streak = 0;
+        state.spawnAcc = 0;
+        state.elapsed = 0;
+        state.lastTs = 0;
+        state.running = true;
+        updateHud();
+        state.rafId = requestAnimationFrame(step);
+        // Move focus into the overlay so keyboard users land here.
+        resumeBtn.focus({ preventScroll: true });
+    }
+
+    function close() {
+        if (!state.running && overlay.hidden) return;
+        state.running = false;
+        if (state.rafId) cancelAnimationFrame(state.rafId);
+        state.rafId = 0;
+        overlay.hidden = true;
+        const main = document.querySelector('main.container');
+        if (main) main.removeAttribute('inert');
+        btn.focus({ preventScroll: true });
+    }
+
+    btn.addEventListener('click', open);
+    resumeBtn.addEventListener('click', close);
+
+    document.addEventListener('keydown', (e) => {
+        if (overlay.hidden) return;
+        if (e.key === 'Escape') {
+            e.preventDefault();
+            close();
+        }
+    });
+
+    // Best score in HUD even before first open.
+    updateHud();
+})();
