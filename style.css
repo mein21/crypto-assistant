@@ -1579,7 +1579,7 @@ svg { display: block; }
     .results .table tbody { display: block; }
     .results .table tbody tr {
         display: grid;
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: minmax(min-content, 1fr) minmax(min-content, 1fr);
         column-gap: 10px;
         row-gap: 6px;
         padding: 14px 16px;
@@ -1683,6 +1683,8 @@ svg { display: block; }
         border: 1px solid var(--border-subtle);
         border-radius: 8px;
         word-break: normal;
+        overflow: visible;
+        min-width: min-content;
     }
     .results .table tbody td.cell-tp { color: var(--accent-emerald); }
     .results .table tbody td.cell-sl { color: var(--loss); }
