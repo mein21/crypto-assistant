@@ -78,58 +78,50 @@ class TradingEngine {
             const coin = symbol.replace('USDT', '');
             priceInfo += `- ${coin}: $${price.toLocaleString()}\n`;
         }
-        
-        let indicatorInfo = 'Индикаторы (1h timeframe):\n';
+
+        let indicatorInfo = 'Индикаторы (1h + 4h):\n';
         for (const [symbol, data] of Object.entries(indicators)) {
             const coin = symbol.replace('USDT', '');
-            const ind = data['1h'] || {};
-            const rsi = ind.rsi?.toFixed(0) || 'N/A';
-            const trend = ind.trend || 'N/A';
-            const sr = ind.sr || {};
-            
-            indicatorInfo += `- ${coin}: RSI=${rsi}, Trend=${trend}, ` +
-                `Support=$${sr.support?.toFixed(0)}, Resistance=$${sr.resistance?.toFixed(0)}\n`;
+            const h1 = data['1h'] || {};
+            const h4 = data['4h'] || {};
+
+            const rsi1h = h1.rsi?.toFixed(0) || 'N/A';
+            const trend1h = h1.trend || 'N/A';
+            const sr1h = h1.sr || {};
+            const macd1h = h1.macd?.histogram >= 0 ? 'бычий' : 'медвежий';
+            const ema201h = h1.ema20?.toFixed(0) || 'N/A';
+            const ema501h = h1.ema50?.toFixed(0) || 'N/A';
+            const emaCross = (h1.ema20 && h1.ema50) ? (h1.ema20 > h1.ema50 ? 'EMA20>50' : 'EMA20<50') : '';
+
+            const trend4h = h4.trend || 'N/A';
+            const rsi4h = h4.rsi?.toFixed(0) || 'N/A';
+            const macd4h = h4.macd?.histogram >= 0 ? 'бычий' : 'медвежий';
+
+            indicatorInfo += `- ${coin}: 1h[RSI=${rsi1h}, тренд=${trend1h}, MACD ${macd1h}, ${emaCross}, ` +
+                `S=$${sr1h.support?.toFixed(0) || '?'}, R=$${sr1h.resistance?.toFixed(0) || '?'}] ` +
+                `4h[тренд=${trend4h}, RSI=${rsi4h}, MACD ${macd4h}]\n`;
         }
-        
+
         const { deposit, riskPercent, minRR } = this.config.trading;
-        
-        return `${priceInfo}
+
+        return `Ты профессиональный инвестор. Цель — ПРИБЫЛЬНЫЕ сделки. Лучше HET, чем убыток.
+
+${priceInfo}
 
 ${indicatorInfo}
 
-ПАРАМЕТРЫ ТОРГОВЛИ:
-- Депозит: ${deposit} USDT
-- Риск на сделку: ${riskPercent}%
-- Минимальный R/R: ${minRR}
+Депозит: ${deposit} USDT, риск: ${riskPercent}%, мин. R/R: ${minRR}
 
-ЗАДАЧА:
-Проанализируй рынок и выбери ЛУЧШУЮ сделку учитывая:
-1. Технические индикаторы (RSI, MACD, тренд, уровни)
-2. Соотношение риск/прибыль
-3. Уровни поддержки/сопротивления
+ПРАВИЛА:
+1. ТОРГУЙ ТОЛЬКО ПО ТРЕНДУ 4h: 4h bullish → только LONG, 4h bearish → только SHORT, 4h neutral → HET
+2. 1h тренд ДОЛЖЕН совпадать с 4h. Если не совпадает → HET
+3. RSI 1h: не входи в LONG при RSI>70, не входи в SHORT при RSI<30 (перекупленность/перепроданность)
+4. SL за ближайшим S/R + запас. TP до ближайшего S/R в направлении сделки
+5. R/R >= ${minRR}. Если нет — HET
+6. confidence: 1-10 строго по качеству сигнала
 
-Верни ОДНУ лучшую сделку в формате JSON:
-{
-    "pair": "BTC/USDT",
-    "direction": "LONG" или "SHORT",
-    "entryPrice": 52500,
-    "tp": 53100,
-    "sl": 51800,
-    "positionSize": 0.1,
-    "riskPercent": 2,
-    "rr": 2.0,
-    "confidence": 85,
-    "reason": "Краткое обоснование"
-}
-
-КРИТЕРИИ ВЫБОРА:
-- RSI в зоне перекупленности (LONG) или перепроданности (SHORT)
-- Цена возле уровня поддержки для LONG / сопротивления для SHORT
-- Четкий тренд
-- R/R >= ${minRR}
-- Высокая уверенность сигнала
-
-Верни ТОЛЬКО JSON без markdown-тегов.`;
+JSON (только, без markdown):
+{"pair":"BTC/USDT","direction":"LONG|SHORT|HET","entryPrice":N,"tp":N,"sl":N,"positionSize":0.1,"riskPercent":${riskPercent},"rr":N,"confidence":1-10,"reason":"кратко на русском"}`;
     }
 
     async generateStrategies(prices, indicators) {
