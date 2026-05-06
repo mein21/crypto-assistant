@@ -1319,6 +1319,11 @@ svg { display: block; }
     font-weight: 700;
     color: var(--brand-cyan);
 }
+.table tbody td.cell-entry,
+.table tbody td.cell-tp,
+.table tbody td.cell-sl {
+    white-space: nowrap;
+}
 .table tbody td:last-child { white-space: normal; }
 .table tbody tr.long > td:nth-child(3) { color: var(--accent-emerald); font-weight: 700; }
 .table tbody tr.short > td:nth-child(3) { color: var(--loss); font-weight: 700; }
@@ -1677,6 +1682,7 @@ svg { display: block; }
         background: rgba(0, 0, 0, 0.25);
         border: 1px solid var(--border-subtle);
         border-radius: 8px;
+        word-break: normal;
     }
     .results .table tbody td.cell-tp { color: var(--accent-emerald); }
     .results .table tbody td.cell-sl { color: var(--loss); }
