@@ -239,7 +239,7 @@ svg { display: block; }
 /* When the wide '5 пар' table is rendered, let the card breathe so the
    8-column table doesn't have to scroll horizontally on desktop. */
 .container:has(.results.show) {
-    width: min(1040px, 100% - 32px);
+    width: min(100% - 32px, max-content);
 }
 
 .title {
@@ -1255,7 +1255,7 @@ svg { display: block; }
 .results.show { display: block; }
 
 .table-wrap {
-    overflow-x: auto;
+    overflow-x: visible;
     border-radius: var(--radius-md);
     border: 1px solid var(--border);
     background: rgba(0, 0, 0, 0.25);
