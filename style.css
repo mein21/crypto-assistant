@@ -1867,3 +1867,184 @@ svg { display: block; }
 @media (prefers-reduced-motion: reduce) {
     .cursor-web { display: none !important; }
 }
+
+/* -- Pause toggle (sits left of the balance refresh toggle) --------------- */
+/*
+ * Reuses the same circular-icon vocabulary as .theme-toggle and
+ * .refresh-toggle. Lives at right:122px on desktop, right:100px on mobile.
+ */
+.pause-toggle {
+    position: fixed;
+    top: 18px;
+    right: 122px;
+    z-index: 1000;
+    width: 40px;
+    height: 40px;
+    display: inline-grid;
+    place-items: center;
+    border-radius: 999px;
+    background: var(--bg-surface-strong);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    backdrop-filter: var(--blur-sm);
+    -webkit-backdrop-filter: var(--blur-sm);
+    box-shadow: var(--shadow-card);
+    transition: transform 0.25s var(--easing), background 0.25s var(--easing),
+                border-color 0.25s var(--easing), box-shadow 0.25s var(--easing);
+}
+.pause-toggle:hover {
+    transform: translateY(-1px) scale(1.05);
+    border-color: var(--border-strong);
+    box-shadow: var(--shadow-card-hover);
+}
+.pause-toggle:active { transform: translateY(0) scale(0.96); }
+.pause-toggle svg { display: block; }
+
+@media (max-width: 480px) {
+    .pause-toggle { top: 12px; right: 100px; width: 36px; height: 36px; }
+}
+
+/* -- Pause overlay + mini-game ------------------------------------------- */
+/*
+ * Fullscreen lockout shown when the user clicks the pause button. Covers
+ * the entire app (z-index above every other fixed element) and traps
+ * interaction inside the pause card. The page underneath is set to inert
+ * by JS while the overlay is open so the keyboard can't tab into it.
+ */
+.pause-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 5000;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: radial-gradient(ellipse at top, rgba(20, 20, 20, 0.92), rgba(0, 0, 0, 0.96));
+    backdrop-filter: blur(14px) saturate(150%);
+    -webkit-backdrop-filter: blur(14px) saturate(150%);
+    animation: pause-fade-in 220ms ease-out;
+}
+.pause-overlay[hidden] { display: none; }
+
+@keyframes pause-fade-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+.pause-card {
+    width: min(360px, 100%);
+    background: var(--bg-surface-strong);
+    border: 1px solid var(--border-strong);
+    border-radius: 18px;
+    padding: 22px 22px 18px;
+    box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    color: var(--text-primary);
+    animation: pause-rise 280ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes pause-rise {
+    from { transform: translateY(14px) scale(0.98); opacity: 0; }
+    to   { transform: translateY(0)    scale(1);    opacity: 1; }
+}
+
+.pause-head { text-align: center; }
+
+.pause-title {
+    margin: 0 0 4px;
+    font-size: 1.5rem;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    color: var(--text-primary);
+}
+.pause-sub {
+    margin: 0;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    letter-spacing: 0.02em;
+}
+.pause-green { color: #22c55e; font-weight: 600; }
+.pause-red   { color: #ef4444; font-weight: 600; }
+
+.pause-stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+}
+.pause-stat {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 8px 6px;
+    border-radius: 10px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+}
+.pause-stat-label {
+    font-size: 0.66rem;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--text-muted);
+}
+.pause-stat-value {
+    font-size: 1.2rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-primary);
+    margin-top: 2px;
+}
+
+.pause-canvas {
+    width: 100%;
+    aspect-ratio: 320 / 420;
+    background:
+        linear-gradient(transparent 0%, rgba(255, 255, 255, 0.025) 50%, transparent 100%) 0 0/100% 4px,
+        linear-gradient(180deg, #0a0a0a 0%, #050505 100%);
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    display: block;
+    touch-action: none;
+    cursor: crosshair;
+    image-rendering: pixelated;
+}
+
+.pause-actions {
+    display: flex;
+    justify-content: center;
+}
+.pause-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 18px;
+    border-radius: 10px;
+    border: 1px solid var(--border-strong);
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    font-size: 0.92rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: transform 0.18s var(--easing), background 0.18s var(--easing),
+                border-color 0.18s var(--easing);
+}
+.pause-btn:hover {
+    transform: translateY(-1px);
+    border-color: rgba(34, 197, 94, 0.55);
+}
+.pause-btn:active { transform: translateY(0) scale(0.97); }
+.pause-btn-primary {
+    background: rgba(34, 197, 94, 0.14);
+    border-color: rgba(34, 197, 94, 0.45);
+    color: #22c55e;
+}
+.pause-btn-primary:hover {
+    background: rgba(34, 197, 94, 0.20);
+    border-color: rgba(34, 197, 94, 0.70);
+}
+
+@media (max-width: 480px) {
+    .pause-card { padding: 18px 16px 14px; gap: 12px; }
+    .pause-title { font-size: 1.3rem; }
+    .pause-stat-value { font-size: 1.05rem; }
+}

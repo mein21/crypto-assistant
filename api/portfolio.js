@@ -8,6 +8,7 @@ const { fetchPrices, fetchCandles } = require('./_marketData');
 const { buildIndicatorBundle, formatIndicatorLine } = require('../utils/indicatorBundle');
 const { fetchLatestNews, formatNewsBlock, formatUpcomingHints } = require('./_news');
 const { enforceMinRR } = require('./_rrGuard');
+const { detectPriceShock, formatShockTag, enforceNoShockTrade } = require('./_priceShock');
 
 // Default symbol set when the client doesn't pass one. Must be a subset of
 // the backend's supported pairs (see PRICE_DECIMALS in api/_bybit.js).
@@ -91,13 +92,26 @@ async function computeIndicators(prices) {
     return Object.fromEntries(results.filter(Boolean));
 }
 
-function buildPrompt(prices, indicators, news) {
+function computeShocks(indicators) {
+    const out = {};
+    for (const [symbol, bundle] of Object.entries(indicators)) {
+        const shock = detectPriceShock(bundle);
+        if (shock) out[symbol] = shock;
+    }
+    return out;
+}
+
+function buildPrompt(prices, indicators, shocks, news) {
     const priceLines = Object.entries(prices)
         .map(([s, p]) => `- ${s}: $${p}`)
         .join('\n');
 
     const indLines = Object.entries(indicators)
-        .map(([s, b]) => formatIndicatorLine(s, b, prices[s]))
+        .map(([s, b]) => {
+            const base = formatIndicatorLine(s, b, prices[s]);
+            const tag = shocks[s] ? `\n  · ${formatShockTag(shocks[s])}` : '';
+            return base + tag;
+        })
         .join('\n');
 
     const newsBlock = formatNewsBlock(news, Object.keys(prices));
@@ -122,6 +136,7 @@ ${newsSection}
 2) Сортируй по |баллу| убыванию, бери топ-5.
 3) Если |балл|<2 → direction="HET", reason="смешанные сигналы". Не угадывай.
 4) Негатив в новостях (взлом/SEC) → снижай confidence или HET. Позитив (ETF) → +confidence на LONG.
+5) ЕСЛИ у пары стоит флаг ⚠️ ШОК (резкое движение >3×ATR за 1ч) — direction ОБЯЗАТЕЛЬНО "HET". Это ловушка ликвидности / новостной выброс, структурных входов здесь нет.
 
 CONFIDENCE — НЕ ставь 5 всем подряд. Считай по формуле от |балла|:
 |балл|=0→4, |балл|=1→5, |балл|=2→6, |балл|=3→7, |балл|=4→8, |балл|=5→9, |балл|=6→10.
@@ -133,11 +148,16 @@ JSON-массив из 5:
 [{"pair":"BTCUSDT","direction":"LONG|SHORT|HET","entryPrice":N,"tp":N,"sl":N,"confidence":1-10,"reason":"кратко по-русски: балл, индикаторы, новости"}]
 
 LONG: TP>entry, SL<entry. SHORT: TP<entry, SL>entry. HET: entry/tp/sl можно null.
-RR = (tp-entry)/(entry-sl) для LONG, (entry-tp)/(sl-entry) для SHORT. Допустимый RR зависит от уверенности:
+RR = (tp-entry)/(entry-sl) для LONG, (entry-tp)/(sl-entry) для SHORT.
+ЦЕЛЬ: каждая сделка должна иметь RR ≥ 1.5. Как достичь:
+- SL клади близко: ±1.0–1.5×ATR от entry или чуть за ближайшим локальным экстремумом из 8 свечей (НЕ далеко-структурный S/R — иначе RR размажется).
+- TP растягивай: ориентир +2×ATR (LONG) / -2×ATR (SHORT) или ближайший значимый уровень S/R, чтобы выйти на RR ≥ 1.5.
+- Если фактический сетап даёт RR < 1.5 (TP упирается в близкое сопротивление, ATR мал) — допускается ниже, но в reason обязательно укажи фактический RR и причину («TP ограничен R=$..., RR=1.1»).
+HARD-FLOOR (аварийный пол, не цель):
 - confidence ≥ 8 → RR ≥ 0.5
 - confidence ≥ 6 → RR ≥ 1.0
 - иначе → RR ≥ 1.5
-RR ≤ 0 (TP на/за entry в неправильную сторону) — НИКОГДА. Лучше HET.
+RR ≤ 0 — НИКОГДА. Лучше HET.
 TP минимум на 0.2% от entry (round-trip taker fee Bybit 0.11%, иначе сделка убыточна по комиссии).
 Только JSON, без markdown и комментариев.`;
 }
@@ -271,8 +291,13 @@ module.exports = async (req, res) => {
             computeIndicators(prices),
             fetchLatestNews()
         ]);
+        const shocks = computeShocks(indicators);
+        const shockKeys = Object.keys(shocks);
+        if (shockKeys.length) {
+            console.log(`[portfolio] price shocks: ${shockKeys.join(',')}`);
+        }
         console.log(`[portfolio] indicators: ${Object.keys(indicators).length} symbols, news: ${news.length} headlines in ${Date.now() - t1}ms`);
-        const prompt = buildPrompt(prices, indicators, news);
+        const prompt = buildPrompt(prices, indicators, shocks, news);
 
         const t2 = Date.now();
         const content = await callOpenRouter(prompt, apiKey);
@@ -290,9 +315,11 @@ module.exports = async (req, res) => {
         const pairs = aiPairs
             .map(normalisePair)
             .filter(p => p.pair && p.direction)
-            // Demote LONG/SHORT trades whose RR < TRADING_MIN_RR (default 1.5)
-            // to HET. The free model occasionally puts TP almost on top of
-            // entry — that's a sub-1 RR after fees, i.e. guaranteed loss.
+            // Two-stage post-validation: kill trades on shocked pairs
+            // (1h candle moved >3×ATR — likely manipulation), then demote
+            // anything still LONG/SHORT whose RR is below the
+            // confidence-tiered floor.
+            .map(p => enforceNoShockTrade(p, shocks[p.pair]))
             .map(p => enforceMinRR(p));
 
         if (pairs.length === 0) {
