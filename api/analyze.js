@@ -24,10 +24,9 @@ const SUPPORTED_SYMBOLS = new Set([
     'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT',
     'DOTUSDT', 'AVAXUSDT', 'LTCUSDT', 'LINKUSDT'
 ]);
-// User prefers the smarter 120b model over the faster 20b sibling. Vercel
-// function maxDuration was bumped to 90s in vercel.json so a single trade
-// fits comfortably even at ~21 tok/s on the free OpenInference provider.
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'openai/gpt-oss-120b:free';
+// Tencent Hy3 preview: Finance #3 on OpenRouter, MoE with configurable
+// reasoning depth. Significantly better at financial analysis than gpt-oss-120b.
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'tencent/hy3-preview:free';
 // Hard ceiling on the OpenRouter call so a slow upstream returns a clean
 // error instead of letting Vercel kill the function. Sized just under
 // Vercel's 90s maxDuration.
@@ -98,7 +97,7 @@ function buildPrompt(prices, indicators, shocks, news) {
 
     const upcoming = formatUpcomingHints();
 
-    return `Ты профессиональный криптотрейдер. Дай ОДНУ лучшую сделку строго JSON.
+    return `Ты профессиональный криптотрейдер-аналитик. Дай ОДНУ лучшую сделку строго JSON.
 
 Цены:
 ${priceLines}
@@ -109,33 +108,42 @@ ${newsSection}
 Календарь: ${upcoming}
 
 ПРОЦЕДУРА (детерминированно, при равных данных — равный ответ):
-1) По каждой паре считай балл = сумма голосов (LONG=+1/SHORT=-1/0) по 6 каналам: EMA-кросс, MACD-гист, RSI (>55 LONG, <45 SHORT), Stoch %K, Bollinger %B (>0.7 SHORT bias, <0.3 LONG bias), тренд+8 свечей.
-2) Бери пару с максимальным |баллом| (ничья → выше ATR%).
-3) Если |балл|<3 или конфликт 3/3 → direction="HET", reason="смешанные сигналы". Не угадывай.
-4) Сильный негатив в новостях (взлом/SEC) → снижай confidence или HET. Сильный позитив (ETF) → +confidence на LONG.
-5) ЕСЛИ у пары стоит флаг ⚠️ ШОК — direction ОБЯЗАТЕЛЬНО "HET". Шок (резкое движение >3×ATR за 1ч) — это ловушка ликвидности или новостной выброс, входить против/по нему нельзя.
+1) По каждой паре считай балл = сумма голосов (LONG=+1/SHORT=-1/0) по 7 каналам:
+   a) EMA-кросс (EMA20>EMA50 → +1, EMA20<EMA50 → -1)
+   b) MACD-гистограмма (растёт → +1, падает → -1)
+   c) RSI (>55 → +1, <45 → -1, 45-55 → 0)
+   d) Stoch %K (>60 → +1, <40 → -1, 40-60 → 0)
+   e) Bollinger %B (>0.7 → -1 SHORT bias, <0.3 → +1 LONG bias, 0.3-0.7 → 0)
+   f) Тренд + динамика 8 свечей (устойчивый рост → +1, устойчивое падение → -1)
+   g) S/R позиция (цена отскочила от поддержки → +1, уткнулась в сопротивление → -1)
+2) Бери пару с максимальным |баллом| (ничья → выше ATR% = выше волатильность = больше потенциал).
+3) Если |балл|<3 или конфликт ≤3/≤3 → direction="HET", reason="смешанные сигналы". Не угадывай.
+4) Проверь ДИВЕРГЕНЦИИ: если цена растёт а RSI/MACD падают — скрытый разворот, снижай confidence. Если цена падает а RSI растёт — бычья дивергенция, усиливай LONG.
+5) Сильный негатив в новостях (взлом/SEC/делистинг) → снижай confidence или HET. Сильный позитив (ETF/апгрейд) → +confidence на LONG.
+6) ЕСЛИ у пары стоит флаг ⚠️ ШОК — direction ОБЯЗАТЕЛЬНО "HET". Шок (>3×ATR за 1ч) = ловушка ликвидности, входить нельзя.
 
 CONFIDENCE — НЕ ставь 5 «по умолчанию». Считай по формуле от |балла|:
-|балл|=0→4, |балл|=1→5, |балл|=2→6, |балл|=3→7, |балл|=4→8, |балл|=5→9, |балл|=6→10.
-±1 за сильный новостной фон по этой паре.
+|балл|=0-1→4, |балл|=2→5, |балл|=3→6, |балл|=4→7, |балл|=5→8, |балл|=6→9, |балл|=7→10.
+Корректировка: +1 за сильный позитивный новостной фон, -1 за негатив, -1 за дивергенцию.
 
-REASON — строго на русском языке. Никаких английских слов («bullish», «hist positive», «trend up» и т.п.) — пиши «бычий», «гистограмма растёт», «восходящий тренд». Допустимы только аббревиатуры индикаторов (EMA, MACD, RSI, Stoch, Bollinger, %B, %K, ATR, S/R) и тикеры пар.
+ENTRY/TP/SL — ОПТИМИЗИРУЙ для максимальной вероятности:
+- Entry = текущая цена (рыночный вход).
+- SL: ставь за ближайшим локальным экстремумом из 8 свечей ±0.5×ATR запас. Не слишком далеко (>2×ATR) — иначе RR пострадает.
+- TP: ориентир = ближайший значимый S/R уровень в направлении сделки ИЛИ +2-3×ATR. Выбирай тот, что реалистичнее по структуре рынка.
+- Проверь: TP не должен быть за сильным S/R уровнем (цена вряд ли пробьёт), SL не должен быть внутри зоны консолидации (сработает на шуме).
+
+RR = (tp-entry)/(entry-sl) для LONG, (entry-tp)/(sl-entry) для SHORT.
+ЦЕЛЬ: RR ≥ 1.5. Если сетап даёт RR < 1.5 (TP упирается в сопротивление) — допускается, но укажи в reason.
+HARD-FLOOR: confidence ≥ 8 → RR ≥ 0.5, confidence ≥ 6 → RR ≥ 1.0, иначе → RR ≥ 1.5.
+RR ≤ 0 — НИКОГДА. TP минимум на 0.2% от entry (комиссия Bybit 0.11% round-trip).
+
+REASON — строго на русском. Формат: «балл=N; [ключевые сигналы]; [S/R контекст]; RR≈X.X».
+Допустимы только аббревиатуры: EMA, MACD, RSI, Stoch, Bollinger, %B, %K, ATR, S/R и тикеры.
 
 JSON:
-{"pair":"BTCUSDT","direction":"LONG|SHORT|HET","entryPrice":N,"tp":N,"sl":N,"confidence":1-10,"reason":"кратко по-русски: балл, ключевые индикаторы, новости если повлияли"}
+{"pair":"BTCUSDT","direction":"LONG|SHORT|HET","entryPrice":N,"tp":N,"sl":N,"confidence":1-10,"reason":"кратко"}
 
 LONG: TP>entry, SL<entry. SHORT: TP<entry, SL>entry. HET: entry/tp/sl можно null.
-RR = (tp-entry)/(entry-sl) для LONG, (entry-tp)/(sl-entry) для SHORT.
-ЦЕЛЬ: каждая сделка должна иметь RR ≥ 1.5. Как достичь:
-- SL клади близко: ±1.0–1.5×ATR от entry или чуть за ближайшим локальным экстремумом из 8 свечей (НЕ далеко-структурный S/R — иначе RR размажется).
-- TP растягивай: ориентир +2×ATR (LONG) / -2×ATR (SHORT) или ближайший значимый уровень S/R, чтобы выйти на RR ≥ 1.5.
-- Если фактический сетап даёт RR < 1.5 (TP упирается в близкое сопротивление, ATR мал) — допускается ниже, но в reason обязательно укажи фактический RR и причину («TP ограничен R=$..., RR=1.1»).
-HARD-FLOOR (аварийный пол, не цель):
-- confidence ≥ 8 → RR ≥ 0.5
-- confidence ≥ 6 → RR ≥ 1.0
-- иначе → RR ≥ 1.5
-RR ≤ 0 — НИКОГДА. Лучше HET.
-TP минимум на 0.2% от entry (round-trip taker fee Bybit 0.11%, иначе сделка убыточна по комиссии).
 Только JSON, без markdown и комментариев.`;
 }
 
@@ -169,7 +177,7 @@ async function callOpenRouter(prompt, apiKey) {
     } catch (e) {
         clearTimeout(timer);
         if (e.name === 'AbortError') {
-            throw new Error(`OpenRouter не ответил за ${OPENROUTER_TIMEOUT_MS / 1000}с (модель ${OPENROUTER_MODEL}). Попробуй ещё раз или укажи более быструю модель в переменной OPENROUTER_MODEL (например openai/gpt-oss-20b:free).`);
+            throw new Error(`OpenRouter не ответил за ${OPENROUTER_TIMEOUT_MS / 1000}с (модель ${OPENROUTER_MODEL}). Попробуй ещё раз.`);
         }
         throw e;
     }

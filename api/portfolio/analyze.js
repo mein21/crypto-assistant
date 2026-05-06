@@ -28,13 +28,12 @@ function parseAIAnalysis(content) {
     catch (_) { return null; }
 }
 
-// User prefers the smarter 120b for portfolio review too. With Vercel
-// maxDuration=90 in vercel.json there's enough budget for a thoughtful
-// response. OPENROUTER_PORTFOLIO_MODEL still wins if explicitly set.
+// Tencent Hy3 preview: Finance #3 on OpenRouter, MoE with configurable
+// reasoning depth. Significantly better at financial analysis than gpt-oss-120b.
 const PORTFOLIO_REVIEW_MODEL =
     process.env.OPENROUTER_PORTFOLIO_MODEL ||
     process.env.OPENROUTER_MODEL ||
-    'openai/gpt-oss-120b:free';
+    'tencent/hy3-preview:free';
 const OPENROUTER_TIMEOUT_MS = 80_000;
 
 async function callOpenRouter(prompt, apiKey) {
