@@ -1267,7 +1267,6 @@ svg { display: block; }
     border-collapse: separate;
     border-spacing: 0;
     font-size: 0.84rem;
-    min-width: 720px;
 }
 .table thead th {
     position: sticky;
