@@ -239,7 +239,7 @@ svg { display: block; }
 /* When the wide '5 пар' table is rendered, let the card breathe so the
    8-column table doesn't have to scroll horizontally on desktop. */
 .container:has(.results.show) {
-    width: min(100% - 32px, max-content);
+    width: min(100% - 32px);
 }
 
 .title {
@@ -1255,7 +1255,7 @@ svg { display: block; }
 .results.show { display: block; }
 
 .table-wrap {
-    overflow-x: visible;
+    overflow-x: hidden;
     border-radius: var(--radius-md);
     border: 1px solid var(--border);
     background: rgba(0, 0, 0, 0.25);
@@ -1267,7 +1267,16 @@ svg { display: block; }
     border-collapse: separate;
     border-spacing: 0;
     font-size: 0.84rem;
+    table-layout: fixed;
 }
+.table thead th:nth-child(1) { width: 36px; }
+.table thead th:nth-child(2) { width: 90px; }
+.table thead th:nth-child(3) { width: 80px; }
+.table thead th:nth-child(4) { width: 100px; }
+.table thead th:nth-child(5) { width: 90px; }
+.table thead th:nth-child(6) { width: 90px; }
+.table thead th:nth-child(7) { width: 70px; }
+.table thead th:nth-child(9) { width: 56px; }
 .table thead th {
     position: sticky;
     top: 0;
@@ -1348,7 +1357,7 @@ svg { display: block; }
 .table tbody tr > td:nth-child(7) { color: var(--brand-cyan); font-weight: 700; }
 .table tbody tr > td:nth-child(8) {
     white-space: normal;
-    max-width: 320px;
+    overflow-wrap: break-word;
     line-height: 1.5;
     color: var(--text-secondary);
     font-family: var(--font-ui);
@@ -1418,8 +1427,8 @@ svg { display: block; }
     color: var(--brand-cyan);
     filter: drop-shadow(0 0 8px var(--accent-glow));
 }
-.portfolio-analysis .table { min-width: 0; }
-.portfolio-analysis .table thead th { font-size: 0.7rem; }
+.portfolio-analysis .table { min-width: 0; table-layout: auto; }
+.portfolio-analysis .table thead th { font-size: 0.7rem; width: auto; }
 
 /* -- Animations ---------------------------------------------------------- */
 @keyframes spin { to { transform: rotate(360deg); } }
