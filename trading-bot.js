@@ -18,7 +18,7 @@ const CONFIG = {
     },
     openrouter: {
         apiKey: process.env.OPENROUTER_API_KEY || '',
-        model: process.env.OPENROUTER_MODEL || 'tencent/hy3-preview:free'
+        model: process.env.OPENROUTER_MODEL || 'nvidia/nemotron-3-super-120b-a12b:free'
     },
     symbols: ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'ADAUSDT', 'DOGEUSDT', 'DOTUSDT', 'AVAXUSDT', 'LTCUSDT', 'LINKUSDT', 'MATICUSDT'],
     intervals: ['15m', '1h', '4h', '1d']

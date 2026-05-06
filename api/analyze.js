@@ -24,9 +24,9 @@ const SUPPORTED_SYMBOLS = new Set([
     'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT',
     'DOTUSDT', 'AVAXUSDT', 'LTCUSDT', 'LINKUSDT'
 ]);
-// Tencent Hy3 preview: Finance #3 on OpenRouter, MoE with configurable
-// reasoning depth. Significantly better at financial analysis than gpt-oss-120b.
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'tencent/hy3-preview:free';
+// NVIDIA Nemotron 3 Super: Finance #26, Programming #8 on OpenRouter.
+// 120B-param MoE (12B active), stable free tier, 262K context.
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'nvidia/nemotron-3-super-120b-a12b:free';
 // Hard ceiling on the OpenRouter call so a slow upstream returns a clean
 // error instead of letting Vercel kill the function. Sized just under
 // Vercel's 90s maxDuration.
