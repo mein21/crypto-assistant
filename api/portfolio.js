@@ -76,11 +76,15 @@ async function computeIndicators(prices) {
     const symbols = Object.keys(prices);
     const results = await Promise.all(symbols.map(async (symbol) => {
         try {
-            const candles = await fetchCandles(symbol, '1h', 100);
-            if (!candles.length) return null;
-            const bundle = buildIndicatorBundle(candles);
-            if (!bundle) return null;
-            return [symbol, bundle];
+            const [candles1h, candles4h] = await Promise.all([
+                fetchCandles(symbol, '1h', 100),
+                fetchCandles(symbol, '4h', 100)
+            ]);
+            if (!candles1h.length) return null;
+            const bundle1h = buildIndicatorBundle(candles1h);
+            if (!bundle1h) return null;
+            const bundle4h = candles4h.length ? buildIndicatorBundle(candles4h) : null;
+            return [symbol, { h1: bundle1h, h4: bundle4h }];
         } catch (e) {
             console.error(`indicator ${symbol}:`, e.message);
             return null;
@@ -91,11 +95,27 @@ async function computeIndicators(prices) {
 
 function computeShocks(indicators) {
     const out = {};
-    for (const [symbol, bundle] of Object.entries(indicators)) {
-        const shock = detectPriceShock(bundle);
+    for (const [symbol, ind] of Object.entries(indicators)) {
+        const shock = detectPriceShock(ind.h1);
         if (shock) out[symbol] = shock;
     }
     return out;
+}
+
+function formatHTFLine(symbol, bundle4h, price) {
+    if (!bundle4h) return `  4h: нет данных`;
+    const parts = [];
+    parts.push(`тренд=${bundle4h.trend || 'neutral'}`);
+    if (Number.isFinite(bundle4h.rsi)) parts.push(`RSI=${bundle4h.rsi.toFixed(1)}`);
+    if (bundle4h.macd) parts.push(`MACD гист. ${bundle4h.macd.histogram >= 0 ? 'бычья' : 'медвежья'}`);
+    if (Number.isFinite(bundle4h.ema20) && Number.isFinite(bundle4h.ema50)) {
+        parts.push(bundle4h.ema20 > bundle4h.ema50 ? 'EMA20>50' : 'EMA20<50');
+    }
+    if (bundle4h.signalScore) {
+        const s = bundle4h.signalScore.score;
+        parts.push(`БАЛЛ=${s > 0 ? '+' : ''}${s}`);
+    }
+    return `  4h: ${parts.join(', ')}`;
 }
 
 function buildPrompt(prices, indicators, shocks, news) {
@@ -104,10 +124,11 @@ function buildPrompt(prices, indicators, shocks, news) {
         .join('\n');
 
     const indLines = Object.entries(indicators)
-        .map(([s, b]) => {
-            const base = formatIndicatorLine(s, b, prices[s]);
+        .map(([s, ind]) => {
+            const base = formatIndicatorLine(s, ind.h1, prices[s]);
+            const htf = formatHTFLine(s, ind.h4, prices[s]);
             const tag = shocks[s] ? `\n  · ${formatShockTag(shocks[s])}` : '';
-            return base + tag;
+            return base + tag + '\n' + htf;
         })
         .join('\n');
 
@@ -118,54 +139,58 @@ function buildPrompt(prices, indicators, shocks, news) {
 
     const upcoming = formatUpcomingHints();
 
-    return `Ты профессиональный криптотрейдер-аналитик. Дай 5 лучших сделок строго JSON-массивом.
+    return `Ты профессиональный инвестор-аналитик. Твоя цель — ПРИБЫЛЬНЫЕ сделки, а не количество. Лучше поставить HET (не торговать), чем войти в убыточную сделку.
 
 Цены:
 ${priceLines}
 
-Индикаторы (1h: RSI, MACD, EMA20/50, Bollinger %B, Stoch %K, ATR, тренд, S/R + 8 свечей):
+Индикаторы 1h (основной ТФ) + 4h (старший ТФ для подтверждения тренда):
+Баллы уже посчитаны кодом: положительный = LONG сигнал, отрицательный = SHORT, 0 = нейтральный.
 ${indLines}
 ${newsSection}
 Календарь: ${upcoming}
 
-ПРОЦЕДУРА (детерминированно, при равных данных — равный ответ):
-1) По каждой паре балл = сумма голосов (LONG=+1/SHORT=-1/0) по 7 каналам:
-   a) EMA-кросс (EMA20>EMA50 → +1, EMA20<EMA50 → -1)
-   b) MACD-гистограмма (растёт → +1, падает → -1)
-   c) RSI (>55 → +1, <45 → -1, 45-55 → 0)
-   d) Stoch %K (>60 → +1, <40 → -1, 40-60 → 0)
-   e) Bollinger %B (>0.7 → -1 SHORT, <0.3 → +1 LONG, 0.3-0.7 → 0)
-   f) Тренд + динамика 8 свечей (устойчивый рост → +1, устойчивое падение → -1)
-   g) S/R позиция (отскок от поддержки → +1, упор в сопротивление → -1)
-2) Сортируй по |баллу| убыванию, бери топ-5.
-3) Если |балл|<2 → direction="HET", reason="смешанные сигналы". Не угадывай.
-4) Проверь ДИВЕРГЕНЦИИ: цена растёт а RSI/MACD падают → скрытый разворот, снижай confidence. Цена падает а RSI растёт → бычья дивергенция, усиливай LONG.
-5) Негатив в новостях (взлом/SEC/делистинг) → снижай confidence или HET. Позитив (ETF/апгрейд) → +confidence на LONG.
-6) ЕСЛИ у пары флаг ⚠️ ШОК (>3×ATR за 1ч) — direction ОБЯЗАТЕЛЬНО "HET". Ловушка ликвидности.
+ПРАВИЛА ПРОФЕССИОНАЛЬНОГО ТРЕЙДЕРА:
 
-CONFIDENCE — НЕ ставь 5 всем. Считай по формуле:
-|балл|=0-1→4, |балл|=2→5, |балл|=3→6, |балл|=4→7, |балл|=5→8, |балл|=6→9, |балл|=7→10.
-Корректировка: +1 позитивные новости, -1 негатив, -1 дивергенция.
+ПРАВИЛО 1 — ТОРГУЙ ТОЛЬКО ПО ТРЕНДУ СТАРШЕГО ТФ:
+- 4h тренд bullish или 4h БАЛЛ > 0 → разрешены ТОЛЬКО LONG
+- 4h тренд bearish или 4h БАЛЛ < 0 → разрешены ТОЛЬКО SHORT
+- 4h нейтральный И 4h БАЛЛ = 0 → HET для этой пары
 
-ENTRY/TP/SL — ОПТИМИЗИРУЙ для максимальной вероятности:
-- Entry = текущая цена.
-- SL: за ближайшим локальным экстремумом из 8 свечей ±0.5×ATR. Не далеко (>2×ATR).
-- TP: ближайший значимый S/R в направлении сделки ИЛИ +2-3×ATR. Реалистичнее по структуре.
-- Проверь: TP не за сильным S/R (не пробьёт), SL не в зоне консолидации (шум).
+ПРАВИЛО 2 — МИНИМУМ ПОДТВЕРЖДЕНИЙ:
+- 1h БАЛЛ должен совпадать по знаку с 4h
+- |1h БАЛЛ| ≥ 3 — иначе HET
+- ДИВЕРГЕНЦИЯ → -2 к доверию. Объём слабый → -1
 
-RR = (tp-entry)/(entry-sl) для LONG, (entry-tp)/(sl-entry) для SHORT.
-ЦЕЛЬ: RR ≥ 1.5. Если RR < 1.5 — допускается, укажи в reason.
-HARD-FLOOR: confidence ≥ 8 → RR ≥ 0.5, confidence ≥ 6 → RR ≥ 1.0, иначе → RR ≥ 1.5.
-RR ≤ 0 — НИКОГДА. TP минимум на 0.2% от entry (комиссия 0.11%).
+ПРАВИЛО 3 — EMA200 ФИЛЬТР:
+- Цена выше EMA200 → только LONG. SHORT при цене выше EMA200 → HET
+- Цена ниже EMA200 → только SHORT. LONG при цене ниже EMA200 → HET
 
-REASON — строго на русском. Формат: «балл=N; [сигналы]; RR≈X.X».
-Допустимы аббревиатуры: EMA, MACD, RSI, Stoch, Bollinger, %B, %K, ATR, S/R и тикеры.
+ПРАВИЛО 4 — TP/SL ПО СТРУКТУРЕ:
+- SL: за ближайшим S/R уровнем + 0.3×ATR запас
+- TP: до ближайшего S/R в направлении сделки ИЛИ 2-3×ATR
+- SL не ближе 0.8×ATR от entry (зона шума)
 
-JSON-массив из 5:
+ПРАВИЛО 5 — CONFIDENCE строго:
+|1h БАЛЛ|=3→5, =4→6, =5→7, =6→8, ≥7→9
++1 за сильный 4h, -1 дивергенция, -1 слабый объём, ±1 новости.
+
+ПРАВИЛО 6 — ШОК = HET. Без исключений.
+
+ПРАВИЛО 7 — RR:
+Минимум RR ≥ 1.5 (conf≥8 → ≥0.5, conf≥6 → ≥1.0). RR ≤ 0 — НИКОГДА.
+TP минимум на 0.2% от entry.
+
+ПРАВИЛО 8 — СОРТИРОВКА:
+Сортируй пары по |1h БАЛЛ| убыванию, затем по ATR% (выше = лучше). Бери топ-5.
+Если пара не проходит правила 1-3 — ставь HET для неё, но включай в список.
+
+REASON — русский. Формат: «1h=N, 4h=N; [сигналы]; RR≈X.X».
+
+JSON-массив из 5 (ТОЛЬКО JSON):
 [{"pair":"BTCUSDT","direction":"LONG|SHORT|HET","entryPrice":N,"tp":N,"sl":N,"confidence":1-10,"reason":"кратко"}]
 
-LONG: TP>entry, SL<entry. SHORT: TP<entry, SL>entry. HET: entry/tp/sl можно null.
-Только JSON, без markdown и комментариев.`;
+LONG: TP>entry, SL<entry. SHORT: TP<entry, SL>entry. HET: entry/tp/sl можно null.`;
 }
 
 async function callOpenRouter(prompt, apiKey) {
@@ -260,6 +285,46 @@ function normalisePair(p) {
     };
 }
 
+// Hard guard: demote trades that go against the 4h timeframe trend.
+function enforce4hTrendAlignment(trade, indicators) {
+    if (!trade) return trade;
+    const dir = String(trade.direction || '').toUpperCase();
+    if (dir !== 'LONG' && dir !== 'SHORT') return trade;
+
+    const ind = indicators[trade.pair];
+    if (!ind || !ind.h4) return trade;
+
+    const h4 = ind.h4;
+    const h4Score = h4.signalScore ? h4.signalScore.score : 0;
+    const h4Trend = h4.trend || 'neutral';
+
+    const h4Bullish = h4Trend === 'bullish' || h4Score > 0;
+    const h4Bearish = h4Trend === 'bearish' || h4Score < 0;
+
+    let demote = false;
+    if (dir === 'LONG' && h4Bearish) demote = true;
+    if (dir === 'SHORT' && h4Bullish) demote = true;
+    if (!h4Bullish && !h4Bearish) demote = true;
+
+    if (h4.ema200 != null && h4.lastClose != null) {
+        if (dir === 'LONG' && h4.lastClose < h4.ema200) demote = true;
+        if (dir === 'SHORT' && h4.lastClose > h4.ema200) demote = true;
+    }
+
+    if (!demote) return trade;
+
+    const note = `[4h тренд=${h4Trend}, 4h балл=${h4Score} — против старшего ТФ]`;
+    const reason = trade.reason ? `${trade.reason} ${note}` : note;
+    return {
+        ...trade,
+        direction: 'HET',
+        entryPrice: null,
+        tp: null,
+        sl: null,
+        reason
+    };
+}
+
 module.exports = async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -321,11 +386,12 @@ module.exports = async (req, res) => {
         const pairs = aiPairs
             .map(normalisePair)
             .filter(p => p.pair && p.direction)
-            // Two-stage post-validation: kill trades on shocked pairs
-            // (1h candle moved >3×ATR — likely manipulation), then demote
-            // anything still LONG/SHORT whose RR is below the
-            // confidence-tiered floor.
+            // Post-validation pipeline:
+            // 1) Kill trades on shocked pairs
             .map(p => enforceNoShockTrade(p, shocks[p.pair]))
+            // 2) Enforce 4h trend alignment
+            .map(p => enforce4hTrendAlignment(p, indicators))
+            // 3) Demote thin RR
             .map(p => enforceMinRR(p));
 
         if (pairs.length === 0) {
