@@ -1938,6 +1938,12 @@ svg { display: block; }
     backdrop-filter: blur(14px) saturate(150%);
     -webkit-backdrop-filter: blur(14px) saturate(150%);
     animation: pause-fade-in 220ms ease-out;
+    /* Stop swipes on the empty padding around the card from scrolling/
+       bouncing the page underneath on mobile. Combined with the body-scroll
+       lock in JS this keeps the mini-game playable on phones. */
+    touch-action: none;
+    overscroll-behavior: contain;
+    overflow: hidden;
 }
 .pause-overlay[hidden] { display: none; }
 

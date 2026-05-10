@@ -2078,7 +2078,12 @@ async function executePairOrder(index) {
         spawnInterval: 950,
         elapsed: 0,
         lastTs: 0,
-        rafId: 0
+        rafId: 0,
+        nextCandleId: 1,
+        // Per-pointer set of candle IDs already hit during the current
+        // touch "stroke" — lets a swipe register multiple distinct candles
+        // without double-counting a single candle when the finger lingers.
+        strokes: new Map()
     };
 
     try {
@@ -2099,6 +2104,7 @@ async function executePairOrder(index) {
         const x = rand(8, W - bodyW - 8);
         const speed = rand(1.2, 2.4) * (1 + state.elapsed / 60000); // creeps up over time
         state.candles.push({
+            id: state.nextCandleId++,
             x, y: -totalH,
             bodyW, bodyH, wickTop, wickBottom,
             speed,
@@ -2233,21 +2239,36 @@ async function executePairOrder(index) {
         streakEl.textContent = String(state.streak);
     }
 
-    function handleHit(clientX, clientY) {
+    // Touch fingers are wider than a mouse cursor — give them a more forgiving
+    // hit slop so swipes across rows of candles register reliably.
+    function hitSlopFor(pointerType) {
+        return pointerType === 'touch' || pointerType === 'pen' ? 10 : 4;
+    }
+
+    function handleHit(clientX, clientY, pointerId, pointerType) {
         const rect = canvas.getBoundingClientRect();
         const x = (clientX - rect.left) * (W / rect.width);
         const y = (clientY - rect.top) * (H / rect.height);
+        const slop = hitSlopFor(pointerType);
+
+        let visited = state.strokes.get(pointerId);
+        if (!visited) {
+            visited = new Set();
+            state.strokes.set(pointerId, visited);
+        }
 
         // Hit-test from front (top-most spawned last) to back so a tap on
         // overlapping candles registers on the visually-front one.
         for (let i = state.candles.length - 1; i >= 0; i--) {
             const c = state.candles[i];
             if (c.caught) continue;
-            const left = c.x - 4;
-            const right = c.x + c.bodyW + 4;
-            const top = c.y;
-            const bot = c.y + c.wickTop + c.bodyH + c.wickBottom;
+            if (visited.has(c.id)) continue;
+            const left = c.x - slop;
+            const right = c.x + c.bodyW + slop;
+            const top = c.y - slop;
+            const bot = c.y + c.wickTop + c.bodyH + c.wickBottom + slop;
             if (x >= left && x <= right && y >= top && y <= bot) {
+                visited.add(c.id);
                 if (c.isGreen) {
                     c.caught = true;
                     state.score += 1;
@@ -2274,8 +2295,75 @@ async function executePairOrder(index) {
 
     canvas.addEventListener('pointerdown', (e) => {
         e.preventDefault();
-        handleHit(e.clientX, e.clientY);
+        // Capture the pointer so subsequent moves keep firing on the canvas
+        // even if the finger drifts onto the surrounding overlay padding.
+        try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+        handleHit(e.clientX, e.clientY, e.pointerId, e.pointerType);
     });
+
+    // Swipe support: while a pointer is down, every move continues hit-testing
+    // so dragging across green candles scores them in sequence.
+    canvas.addEventListener('pointermove', (e) => {
+        if (!state.running) return;
+        // buttons===0 means no button is held (mouse hover) — ignore those.
+        // For touch/pen, buttons is 1 while the finger is on the screen.
+        if (e.buttons === 0 && e.pointerType !== 'touch' && e.pointerType !== 'pen') return;
+        if (!state.strokes.has(e.pointerId)) return;
+        e.preventDefault();
+        handleHit(e.clientX, e.clientY, e.pointerId, e.pointerType);
+    });
+
+    function endStroke(e) {
+        state.strokes.delete(e.pointerId);
+        try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
+    }
+    canvas.addEventListener('pointerup', endStroke);
+    canvas.addEventListener('pointercancel', endStroke);
+    canvas.addEventListener('pointerleave', endStroke);
+
+    // Belt-and-suspenders for older mobile browsers that fire touch events
+    // alongside pointer events: stop the page from scrolling/zooming when the
+    // user drags inside the canvas.
+    function preventTouch(e) { e.preventDefault(); }
+    canvas.addEventListener('touchstart', preventTouch, { passive: false });
+    canvas.addEventListener('touchmove', preventTouch, { passive: false });
+
+    // Body-scroll lock — `inert` on <main> blocks focus but does NOT stop
+    // touch-scroll on mobile. Without this, swipes on the overlay's empty
+    // padding bleed through and scroll the page underneath, making the
+    // game unplayable on phones. We use the iOS-friendly fixed-position
+    // pattern so the scroll position is restored on close.
+    let lockedScrollY = 0;
+    function lockBodyScroll() {
+        lockedScrollY = window.scrollY || window.pageYOffset || 0;
+        const body = document.body;
+        body.dataset.pauseScrollLock = '1';
+        body.style.position = 'fixed';
+        body.style.top = `-${lockedScrollY}px`;
+        body.style.left = '0';
+        body.style.right = '0';
+        body.style.width = '100%';
+    }
+    function unlockBodyScroll() {
+        const body = document.body;
+        if (body.dataset.pauseScrollLock !== '1') return;
+        delete body.dataset.pauseScrollLock;
+        body.style.position = '';
+        body.style.top = '';
+        body.style.left = '';
+        body.style.right = '';
+        body.style.width = '';
+        window.scrollTo(0, lockedScrollY);
+    }
+
+    // Block touchmove on the overlay backdrop itself so swipes that miss the
+    // canvas don't scroll the locked body (some mobile browsers still fire
+    // overscroll bounce). The canvas has its own preventDefault above.
+    function blockOverlayTouch(e) {
+        if (e.target === canvas) return;
+        e.preventDefault();
+    }
+    overlay.addEventListener('touchmove', blockOverlayTouch, { passive: false });
 
     function open() {
         if (state.running) return;
@@ -2283,6 +2371,7 @@ async function executePairOrder(index) {
         // Make the rest of the page non-interactive while paused.
         const main = document.querySelector('main.container');
         if (main) main.setAttribute('inert', '');
+        lockBodyScroll();
         // Reset round
         state.candles = [];
         state.sparkles = [];
@@ -2291,6 +2380,7 @@ async function executePairOrder(index) {
         state.spawnAcc = 0;
         state.elapsed = 0;
         state.lastTs = 0;
+        state.strokes.clear();
         state.running = true;
         updateHud();
         state.rafId = requestAnimationFrame(step);
@@ -2303,9 +2393,11 @@ async function executePairOrder(index) {
         state.running = false;
         if (state.rafId) cancelAnimationFrame(state.rafId);
         state.rafId = 0;
+        state.strokes.clear();
         overlay.hidden = true;
         const main = document.querySelector('main.container');
         if (main) main.removeAttribute('inert');
+        unlockBodyScroll();
         btn.focus({ preventScroll: true });
     }
 
